@@ -223,22 +223,11 @@ bun run test:sdks
 bun run verify:sdks-publish   # dry-run pack; ensures no workspace:* in tarballs
 ```
 
-### Publishing
+### Releases
 
-SDKs are published to **public npm** under the `@devorash` scope. See [RELEASE.md](./RELEASE.md) for:
+Package publication is pending. JavaScript packages use the `@devorash` npm scope; Python packages use the `devora-` prefix on PyPI. Releases are coordinated across both registries and require verification and explicit approval.
 
-- Creating the `@devorash` npm organization
-- Semver and Changesets workflow
-- CI trusted publishing and `publish:sdks` commands
-
-Quick reference:
-
-```bash
-bun run changeset          # after SDK changes
-bun run version:sdks       # bump versions + CHANGELOG
-bun run test:sdks          # build, test, bundle size
-bun run publish:sdks       # publish all packages (CI uses npm trusted publishing)
-```
+See [contribution and release guidance](https://github.com/getdevora/devora-sdks/blob/main/CONTRIBUTING.md). Run `bun run test:sdks` and `bun run verify:sdks-publish` to verify source and package artifacts without publishing.
 
 ## Future Packages (Planned)
 
