@@ -1,0 +1,25 @@
+{
+	"$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
+	"changelog": ["../scripts/changelog.cjs", {}],
+	"commit": false,
+	"fixed": [
+		[
+			"@devorash/core",
+			"@devorash/node",
+			"@devorash/browser",
+			"@devorash/express",
+			"@devorash/hono",
+			"@devorash/fastify",
+			"@devorash/react",
+			"@devorash/vue",
+			"@devorash/svelte",
+			"@devorash/solid",
+			"@devorash/nextjs"
+		]
+	],
+	"linked": [],
+	"access": "public",
+	"baseBranch": "main",
+	"updateInternalDependencies": "patch",
+	"ignore": []
+}

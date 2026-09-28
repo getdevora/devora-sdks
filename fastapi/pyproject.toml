@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "devora-fastapi"
+version = "0.1.0"
+description = "FastAPI adapter for the Devora Python backend SDK"
+readme = "README.md"
+requires-python = ">=3.10,<4.0"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Devora" }]
+keywords = ["devora", "sdk", "fastapi", "impersonation", "security"]
+classifiers = [
+	"Development Status :: 5 - Production/Stable",
+	"Framework :: FastAPI",
+	"Intended Audience :: Developers",
+	"Programming Language :: Python :: 3",
+	"Programming Language :: Python :: 3.10",
+	"Programming Language :: Python :: 3.11",
+	"Programming Language :: Python :: 3.12",
+	"Programming Language :: Python :: 3.13",
+	"Programming Language :: Python :: 3.14",
+	"Typing :: Typed",
+]
+dependencies = [
+	"devora-python>=0.1.0,<0.2.0",
+	# Security floors: the lowest versions without known advisories (audited 2026-09-28).
+	"fastapi>=0.133.0,<1.0.0",
+	"starlette>=1.3.1",
+	"anyio>=4.14.2",
+	"idna>=3.15",
+]
+
+[project.urls]
+Documentation = "https://docs.devora.sh"
+Repository = "https://github.com/getdevora/devora-sdks"
+Issues = "https://github.com/getdevora/devora-sdks/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/devora_sdk_fastapi"]
+
+[tool.hatch.build.targets.sdist]
+# Tests and local tooling stay in the repository; the sdist carries the package.
+include = ["src", "README.md", "LICENSE", "pyproject.toml"]

@@ -1,0 +1,22 @@
+{
+	"$schema": "https://turbo.build/schema.json",
+	"ui": "tui",
+	"globalDependencies": ["scripts/**", "tsconfig.base.json", ".env"],
+	"globalEnv": ["DEVORA_SDK_API_ORIGIN", "DEVORA_SDK_DASHBOARD_ORIGIN"],
+	"globalPassThroughEnv": [
+		"WATCHPACK_POLLING",
+		"WATCHPACK_POLLING_INTERVAL",
+		"CHOKIDAR_USEPOLLING",
+		"CHOKIDAR_INTERVAL"
+	],
+	"tasks": {
+		"build": {
+			"dependsOn": ["^build"],
+			"inputs": ["$TURBO_DEFAULT$", ".env*"],
+			"outputs": ["dist/**", ".next/**", "src/constants/api-url.gen.ts"]
+		},
+		"check-types": {
+			"dependsOn": ["^build", "^check-types"]
+		}
+	}
+}

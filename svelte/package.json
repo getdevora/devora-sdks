@@ -1,0 +1,82 @@
+{
+	"name": "@devorash/svelte",
+	"version": "0.1.0",
+	"description": "Devora Svelte SDK - stores for impersonation",
+	"keywords": [
+		"devora",
+		"impersonation",
+		"sdk",
+		"stores",
+		"support",
+		"svelte"
+	],
+	"homepage": "https://docs.devora.sh/reference/packages",
+	"bugs": {
+		"url": "https://github.com/getdevora/devora-sdks/issues"
+	},
+	"license": "MIT",
+	"author": "Devora",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/getdevora/devora-sdks.git",
+		"directory": "svelte"
+	},
+	"files": [
+		"dist",
+		"src/ImpersonationBanner.svelte",
+		"src/ReadOnlyGuard.svelte",
+		"src/WriteProtected.svelte",
+		"src/BridgeGuard.svelte",
+		"src/SessionPreparingScreen.svelte",
+		"src/SessionEndedScreen.svelte",
+		"src/LinkInvalidScreen.svelte",
+		"src/BlockedActionDialog.svelte",
+		"README.md",
+		"LICENSE"
+	],
+	"type": "module",
+	"sideEffects": false,
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"svelte": "./dist/index.js",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"svelte": "./dist/index.js",
+			"import": "./dist/index.js"
+		},
+		"./ImpersonationBanner.svelte": "./src/ImpersonationBanner.svelte",
+		"./ReadOnlyGuard.svelte": "./src/ReadOnlyGuard.svelte",
+		"./WriteProtected.svelte": "./src/WriteProtected.svelte",
+		"./BridgeGuard.svelte": "./src/BridgeGuard.svelte",
+		"./SessionPreparingScreen.svelte": "./src/SessionPreparingScreen.svelte",
+		"./SessionEndedScreen.svelte": "./src/SessionEndedScreen.svelte",
+		"./LinkInvalidScreen.svelte": "./src/LinkInvalidScreen.svelte",
+		"./BlockedActionDialog.svelte": "./src/BlockedActionDialog.svelte"
+	},
+	"publishConfig": {
+		"access": "public",
+		"provenance": true
+	},
+	"scripts": {
+		"build": "rm -rf dist && tsc",
+		"check-types": "tsc --noEmit",
+		"clean": "rm -rf dist",
+		"prepublishOnly": "bun run build"
+	},
+	"dependencies": {
+		"@devorash/browser": "workspace:*",
+		"@devorash/core": "workspace:*"
+	},
+	"devDependencies": {
+		"svelte": "^5.56.4",
+		"typescript": "^6.0.3"
+	},
+	"peerDependencies": {
+		"svelte": "^4.0.0 || ^5.0.0"
+	},
+	"engines": {
+		"node": ">=20.0.0"
+	}
+}

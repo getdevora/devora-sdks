@@ -1,0 +1,64 @@
+{
+	"name": "@devorash/hono",
+	"version": "0.1.0",
+	"description": "Devora Hono adapter for backend SDK",
+	"keywords": [
+		"backend",
+		"devora",
+		"edge",
+		"hono",
+		"impersonation",
+		"sdk"
+	],
+	"homepage": "https://docs.devora.sh/reference/packages",
+	"bugs": {
+		"url": "https://github.com/getdevora/devora-sdks/issues"
+	},
+	"license": "MIT",
+	"author": "Devora",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/getdevora/devora-sdks.git",
+		"directory": "hono"
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"type": "module",
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"publishConfig": {
+		"access": "public",
+		"provenance": true
+	},
+	"scripts": {
+		"build": "rm -rf dist && tsc",
+		"check-types": "tsc --noEmit",
+		"clean": "rm -rf dist",
+		"prepublishOnly": "bun run build"
+	},
+	"dependencies": {
+		"@devorash/core": "workspace:*",
+		"@devorash/node": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/node": "^26.0.1",
+		"hono": "^4.13.5",
+		"typescript": "^6.0.3"
+	},
+	"peerDependencies": {
+		"hono": "^4.0.0"
+	},
+	"engines": {
+		"node": ">=20.0.0"
+	}
+}

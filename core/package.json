@@ -1,0 +1,63 @@
+{
+	"name": "@devorash/core",
+	"version": "0.1.0",
+	"description": "Core utilities, types, and constants for Devora SDKs",
+	"keywords": [
+		"customer-support",
+		"devora",
+		"impersonation",
+		"sdk",
+		"support"
+	],
+	"homepage": "https://docs.devora.sh/reference/packages",
+	"bugs": {
+		"url": "https://github.com/getdevora/devora-sdks/issues"
+	},
+	"license": "MIT",
+	"author": "Devora",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/getdevora/devora-sdks.git",
+		"directory": "core"
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"type": "module",
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		},
+		"./types": {
+			"types": "./dist/types/index.d.ts",
+			"import": "./dist/types/index.js"
+		},
+		"./constants": {
+			"types": "./dist/constants/index.d.ts",
+			"import": "./dist/constants/index.js"
+		}
+	},
+	"publishConfig": {
+		"access": "public",
+		"provenance": true
+	},
+	"scripts": {
+		"build": "rm -rf dist && node ../scripts/generate-api-url.mjs && tsc",
+		"check-types": "node ../scripts/generate-api-url.mjs && tsc --noEmit",
+		"clean": "rm -rf dist",
+		"prepublishOnly": "bun run build"
+	},
+	"devDependencies": {
+		"@types/node": "^26.0.1",
+		"typescript": "^6.0.3"
+	},
+	"engines": {
+		"node": ">=20.0.0"
+	}
+}

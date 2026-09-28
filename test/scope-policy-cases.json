@@ -1,0 +1,26 @@
+[
+	{ "pattern": "/api/**/secrets", "path": "/api/secrets", "matches": true },
+	{ "pattern": "/api/**/secrets", "path": "/api/team/secrets", "matches": true },
+	{ "pattern": "/api/*/secrets", "path": "/api/secrets", "matches": false },
+	{ "pattern": "/api/*/secrets", "path": "/api/team/secrets", "matches": true },
+	{ "pattern": "/api/user*", "path": "/api/users", "matches": true },
+	{ "pattern": "/api/user*", "path": "/api/users/one", "matches": false },
+	{ "pattern": "/api/reports", "path": "/api/REPORTS", "matches": false },
+	{
+		"pattern": "/api/reports",
+		"path": "/api/REPORTS",
+		"options": { "caseSensitive": false },
+		"matches": true
+	},
+	{ "pattern": "/api/reports", "path": "/api/reports/", "matches": false },
+	{
+		"pattern": "/api/reports",
+		"path": "/api/reports/",
+		"options": { "ignoreTrailingSlash": true },
+		"matches": true
+	},
+	{ "pattern": "/api/**/a*/**/secrets", "path": "/api/alice/secrets", "matches": true },
+	{ "pattern": "/api/**/a*/**/secrets", "path": "/api/bob/secrets", "matches": false },
+	{ "pattern": "/**", "path": "/", "matches": true },
+	{ "pattern": "/", "path": "/", "matches": true }
+]

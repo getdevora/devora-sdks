@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "devora-django"
+version = "0.1.0"
+description = "Django adapter for the Devora Python backend SDK"
+readme = "README.md"
+requires-python = ">=3.10,<4.0"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Devora" }]
+keywords = ["devora", "sdk", "django", "impersonation", "security"]
+classifiers = [
+	"Development Status :: 5 - Production/Stable",
+	"Framework :: Django",
+	"Framework :: Django :: 5.2",
+	"Framework :: Django :: 6.0",
+	"Intended Audience :: Developers",
+	"Programming Language :: Python :: 3",
+	"Programming Language :: Python :: 3.10",
+	"Programming Language :: Python :: 3.11",
+	"Programming Language :: Python :: 3.12",
+	"Programming Language :: Python :: 3.13",
+	"Programming Language :: Python :: 3.14",
+	"Typing :: Typed",
+]
+dependencies = [
+	"devora-python>=0.1.0,<0.2.0",
+	# Security floors: the lowest versions without known advisories (audited 2026-09-28).
+	"Django>=5.2.17,<7.0,!=6.0.0,!=6.0.1,!=6.0.2,!=6.0.3,!=6.0.4,!=6.0.5,!=6.0.6,!=6.0.7",
+	"sqlparse>=0.6.0",
+]
+
+[project.urls]
+Documentation = "https://docs.devora.sh"
+Repository = "https://github.com/getdevora/devora-sdks"
+Issues = "https://github.com/getdevora/devora-sdks/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/devora_sdk_django"]
+
+[tool.hatch.build.targets.sdist]
+# Tests and local tooling stay in the repository; the sdist carries the package.
+include = ["src", "README.md", "LICENSE", "pyproject.toml"]

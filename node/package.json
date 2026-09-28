@@ -1,0 +1,61 @@
+{
+	"name": "@devorash/node",
+	"version": "0.1.0",
+	"description": "Devora Node.js Backend SDK for secure impersonation",
+	"keywords": [
+		"backend",
+		"customer-support",
+		"devora",
+		"impersonation",
+		"nodejs",
+		"sdk",
+		"support"
+	],
+	"homepage": "https://docs.devora.sh/reference/packages",
+	"bugs": {
+		"url": "https://github.com/getdevora/devora-sdks/issues"
+	},
+	"license": "MIT",
+	"author": "Devora",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/getdevora/devora-sdks.git",
+		"directory": "node"
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"type": "module",
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"publishConfig": {
+		"access": "public",
+		"provenance": true
+	},
+	"scripts": {
+		"build": "rm -rf dist && tsc",
+		"check-types": "tsc --noEmit",
+		"clean": "rm -rf dist",
+		"prepublishOnly": "bun run build"
+	},
+	"dependencies": {
+		"@devorash/core": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/node": "^26.0.1",
+		"typescript": "^6.0.3"
+	},
+	"peerDependencies": {},
+	"engines": {
+		"node": ">=20.0.0"
+	}
+}

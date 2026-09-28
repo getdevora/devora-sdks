@@ -1,0 +1,65 @@
+{
+	"name": "@devorash/react",
+	"version": "0.1.0",
+	"description": "Devora React SDK - hooks and components for impersonation",
+	"keywords": [
+		"devora",
+		"hooks",
+		"impersonation",
+		"react",
+		"sdk",
+		"support"
+	],
+	"homepage": "https://docs.devora.sh/reference/packages",
+	"bugs": {
+		"url": "https://github.com/getdevora/devora-sdks/issues"
+	},
+	"license": "MIT",
+	"author": "Devora",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/getdevora/devora-sdks.git",
+		"directory": "react"
+	},
+	"files": [
+		"dist",
+		"README.md",
+		"LICENSE"
+	],
+	"type": "module",
+	"sideEffects": false,
+	"main": "./dist/index.js",
+	"module": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"publishConfig": {
+		"access": "public",
+		"provenance": true
+	},
+	"scripts": {
+		"build": "rm -rf dist && tsc",
+		"check-types": "tsc --noEmit",
+		"clean": "rm -rf dist",
+		"prepublishOnly": "bun run build"
+	},
+	"dependencies": {
+		"@devorash/browser": "workspace:*",
+		"@devorash/core": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/react": "^19.2.17",
+		"react": "^19.2.7",
+		"typescript": "^6.0.3"
+	},
+	"peerDependencies": {
+		"react": "^18.0.0 || ^19.0.0"
+	},
+	"engines": {
+		"node": ">=20.0.0"
+	}
+}

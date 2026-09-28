@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "devora-python"
+version = "0.1.0"
+description = "Devora Python backend SDK for secure impersonation"
+readme = "README.md"
+requires-python = ">=3.10,<4.0"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Devora" }]
+keywords = ["devora", "sdk", "impersonation", "backend", "security"]
+classifiers = [
+	"Development Status :: 5 - Production/Stable",
+	"Intended Audience :: Developers",
+	"Programming Language :: Python :: 3",
+	"Programming Language :: Python :: 3.10",
+	"Programming Language :: Python :: 3.11",
+	"Programming Language :: Python :: 3.12",
+	"Programming Language :: Python :: 3.13",
+	"Programming Language :: Python :: 3.14",
+	"Typing :: Typed",
+]
+dependencies = []
+
+[project.urls]
+Documentation = "https://docs.devora.sh"
+Repository = "https://github.com/getdevora/devora-sdks"
+Issues = "https://github.com/getdevora/devora-sdks/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/devora_sdk"]
+# Generated at build time and git-ignored; included explicitly so a .gitignore
+# rule can never drop it from the distribution.
+artifacts = ["src/devora_sdk/api_url_gen.py"]
+
+[tool.hatch.build]
+artifacts = ["src/devora_sdk/api_url_gen.py"]
+
+[tool.hatch.build.targets.sdist]
+# Tests and local tooling stay in the repository; the sdist carries the package.
+include = ["src", "README.md", "LICENSE", "pyproject.toml"]

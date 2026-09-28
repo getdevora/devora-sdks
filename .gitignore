@@ -1,0 +1,14 @@
+node_modules/
+dist/
+build/
+.turbo/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+.env.*
+!.env.example
+core/src/constants/api-url.gen.ts
+python/src/devora_sdk/api_url_gen.py
+.DS_Store
