@@ -162,3 +162,54 @@ test("an incompressible oversized single event fails before an upload can be for
 		compressRecordingEvents([event(0, Buffer.from(bytes).toString("base64"))])
 	).rejects.toBeInstanceOf(RecordingEncodingLimitError)
 })
+
+test("a small final tail is queued synchronously before a host can revoke or navigate", async () => {
+	const calls: Record<string, unknown>[] = []
+	globalThis.fetch = ((url, init) => {
+		calls.push(JSON.parse(String(init?.body)))
+		return Promise.resolve(Response.json({ success: true }))
+	}) as typeof fetch
+	const recorder = new SessionRecorder(config) as any
+	recorder.events = [event(1, "small final event")]
+	recorder.pendingBytes = recordingEventsBytes(recorder.events) - 2
+	const ending = recorder.flush(true)
+	// No await: the final POST must already be queued while revocation remains immediate.
+	expect(calls).toHaveLength(1)
+	expect(calls[0].isFinal).toBe(true)
+	expect(calls[0].chunkIndex).toBe(0)
+	await ending
+})
+
+test("a retired recorder queues a bounded final tail while an earlier POST remains pending", async () => {
+	const calls: any[] = []
+	let release: () => void = () => {}
+	const earlier = new Promise<void>((resolve) => {
+		release = resolve
+	})
+	globalThis.fetch = ((_url, init) => {
+		calls.push(JSON.parse(String(init?.body)))
+		return Promise.resolve(Response.json({ success: true }))
+	}) as typeof fetch
+	const recorder = new SessionRecorder(config) as any
+	recorder.isRunning = false
+	recorder.activeFlush = earlier
+	recorder.chunkIndex = 1
+	recorder.events = [event(1, "x".repeat(35_000))]
+	recorder.pendingBytes = recordingEventsBytes(recorder.events) - 2
+	const ending = recorder.flush(true)
+	expect(calls).toHaveLength(1)
+	expect(calls[0].chunkIndex).toBe(1)
+	expect(calls[0].isFinal).toBe(true)
+	expect(recorder.activeFlush).toBe(earlier)
+	// stop() must not resolve (letting the host end the session) while the earlier,
+	// lower-index chunk is still in flight; a post-end upload of it would be refused.
+	let ended = false
+	void ending.then(() => {
+		ended = true
+	})
+	await new Promise((resolve) => setTimeout(resolve, 10))
+	expect(ended).toBe(false)
+	release()
+	await ending
+	expect(ended).toBe(true)
+})

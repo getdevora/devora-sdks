@@ -3,6 +3,7 @@ import {
 	DEVORA_ENDPOINTS,
 	SECURITY_HEADERS,
 	createImpersonationGuard,
+	createScopeConfigFetcher,
 	validateImpersonationContext,
 	resolveEnvironment,
 	resolveBrowserSession,
@@ -31,6 +32,7 @@ import {
 } from "../nextjs/dist/index.js"
 import { createImpersonationGuard as createHonoImpersonationGuard } from "../hono/dist/index.js"
 import { Hono } from "hono"
+import { controlPlaneFetch } from "../node/dist/transport.js"
 import { routeRelativePath } from "../core/dist/index.js"
 import {
 	TEST_KEYS,
@@ -1148,6 +1150,119 @@ test("a 304 policy revalidation keeps the full server cache window", async () =>
 	// Default TTL is five minutes, not thirty seconds: the SDK must not poll the
 	// rate-limited policy endpoint twice a minute per process.
 	expect(cached!.cachedUntil - Date.now()).toBeGreaterThan(4 * 60 * 1000)
+})
+
+test("endpoint rule edits remain cached until the Node SDK refreshes policy", async () => {
+	let serverVersion = 1
+	let requests = 0
+	globalThis.fetch = async () => {
+		requests++
+		return new Response(
+			JSON.stringify({
+				success: true,
+				data: {
+					version: serverVersion,
+					safeReadEndpoints: [],
+					blockedEndpoints:
+						serverVersion === 1 ? [{ method: "*", pattern: "/api/customers/*" }] : [],
+					cachedUntil: Date.now() + 5 * 60_000,
+				},
+			}),
+			{ headers: { etag: `policy-v${serverVersion}` } }
+		)
+	}
+	const fetcher = createScopeConfigFetcher({
+		apiKey,
+		signRequest: () => ({}),
+		apiUrl: "https://devora.example",
+	})
+	try {
+		expect((await fetcher.getConfig())?.blockedEndpoints).toHaveLength(1)
+		serverVersion = 2
+		// Changing the server policy does not push an invalidation into this process.
+		expect((await fetcher.getConfig())?.blockedEndpoints).toHaveLength(1)
+		expect(requests).toBe(1)
+		expect((await fetcher.refresh())?.blockedEndpoints).toHaveLength(0)
+		expect(requests).toBe(2)
+	} finally {
+		fetcher.stop()
+	}
+})
+
+test("real HTTP policy revalidation accepts 304 on the deployed Bun runtime", async () => {
+	globalThis.fetch = originalFetch
+	let requests = 0
+	const server = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		fetch(request) {
+			requests++
+			return request.headers.get("if-none-match") === '"policy-v1"'
+				? new Response(null, { status: 304 })
+				: Response.json(
+						{
+							success: true,
+							data: {
+								version: 1,
+								safeReadEndpoints: [],
+								blockedEndpoints: [],
+								cachedUntil: Date.now() + 300_000,
+							},
+						},
+						{ headers: { etag: '"policy-v1"' } }
+					)
+		},
+	})
+	const sdk = devoraSDK({
+		...TEST_KEYS,
+		apiUrl: `http://127.0.0.1:${server.port}`,
+		environment: "test",
+	})
+	try {
+		await sdk.ready
+		await sdk.refreshScopeConfig()
+		await sdk.refreshScopeConfig()
+		expect(requests).toBe(3)
+		expect(sdk.getCachedScopeConfig()?.version).toBe(1)
+		expect(sdk.getCachedScopeConfig()!.cachedUntil - Date.now()).toBeGreaterThan(240_000)
+	} finally {
+		sdk.destroy()
+		await server.stop(true)
+	}
+})
+
+test("real HTTP redirect responses never forward signed headers to a target", async () => {
+	globalThis.fetch = originalFetch
+	let targetRequests = 0
+	const server = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		fetch(request) {
+			const url = new URL(request.url)
+			if (url.pathname === "/target") {
+				targetRequests++
+				return Response.json({ success: true })
+			}
+			return new Response(null, {
+				status: Number(url.pathname.slice(1)),
+				headers: { location: new URL("/target", url).href },
+			})
+		},
+	})
+	try {
+		for (const status of [300, 301, 302, 303, 305, 307, 308]) {
+			await expect(
+				controlPlaneFetch(`http://127.0.0.1:${server.port}/${status}`, {
+					method: "POST",
+					headers: { "X-Devora-Signature": "synthetic-only" },
+					body: "synthetic-only",
+				})
+			).rejects.toThrow("Control-plane redirects are not allowed")
+		}
+		expect(targetRequests).toBe(0)
+	} finally {
+		await server.stop(true)
+	}
 })
 
 test("concurrent requests during a liveness outage share one lookup and get a 503", async () => {

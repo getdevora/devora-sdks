@@ -16,12 +16,24 @@ export class ControlPlaneResponseError extends Error {
 }
 
 /** `fetch` that refuses redirects and aborts after `timeoutMs` in total. */
-export function controlPlaneFetch(
+export async function controlPlaneFetch(
 	url: string,
 	init: RequestInit,
 	timeoutMs = 5_000
 ): Promise<Response> {
-	return fetch(url, { ...init, redirect: "error", signal: AbortSignal.timeout(timeoutMs) })
+	// Bun 1.3.14 treats a 304 as an unexpected redirect in "error" mode.
+	// Manual mode never forwards signed headers/body; reject redirect replies
+	// ourselves while allowing conditional GET policy revalidation.
+	const response = await fetch(url, {
+		...init,
+		redirect: "manual",
+		signal: AbortSignal.timeout(timeoutMs),
+	})
+	if (response.status >= 300 && response.status < 400 && response.status !== 304) {
+		void response.body?.cancel().catch(() => {})
+		throw new ControlPlaneResponseError("Control-plane redirects are not allowed")
+	}
+	return response
 }
 
 /**

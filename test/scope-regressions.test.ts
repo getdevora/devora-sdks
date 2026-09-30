@@ -165,7 +165,7 @@ test("Node liveness requests carry a valid customer-to-devora v3 signature", asy
 			})
 			expect(headers.get("x-devora-signature")).toBe(expected.headers["x-devora-signature"])
 			expect(headers.get("x-devora-signature-version")).toBe("3")
-			expect((init as RequestInit).redirect).toBe("error")
+			expect((init as RequestInit).redirect).toBe("manual")
 			checked = true
 			return Response.json({ success: true, data: { valid: true } })
 		}
