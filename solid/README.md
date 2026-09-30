@@ -1,12 +1,10 @@
 # @devorash/solid
 
-Recording, masking and activity preferences are configured in Devora Settings.
-SDK initialization overrides are ignored. New sessions retain the server's policy
-snapshot across exchange and resume. Developer privacy labels take effect only
-when selected in Settings; sensitive-field protection remains mandatory.
-See [migration details](https://github.com/getdevora/devora-sdks/blob/main/SETTINGS.md).
+Solid provider, primitives and components for Devora impersonation. Wraps
+[`@devorash/browser`](https://www.npmjs.com/package/@devorash/browser).
 
-Solid.js SDK for Devora - primitives for impersonation.
+Supports Solid 1.7 and later. The SDK initializes in `onMount`, so it never runs during server
+rendering.
 
 ## Installation
 
@@ -14,21 +12,29 @@ Solid.js SDK for Devora - primitives for impersonation.
 npm install @devorash/solid
 ```
 
-## Quick Start
+Use a client key (`pk_client_live_…`) and list your app's origin under **Developer →
+Integration → Allowed origins (client keys)** in the Devora dashboard.
+
+## Quick start
+
+Mount `DevoraProvider` once, at the root, above your router and auth guards:
 
 ```tsx
 import { DevoraProvider, ImpersonationBanner } from "@devorash/solid"
 
-function App() {
+export function App() {
 	return (
 		<DevoraProvider
-			apiKey="pk_client_live_xxx"
-			onImpersonate={async ({ token, data }) => {
+			apiKey={import.meta.env.VITE_DEVORA_API_KEY}
+			onImpersonate={async ({ token }) => {
+				// YOU IMPLEMENT: turn `token` into your app's logged-in session.
 				await signInWithDevoraToken(token)
+				window.location.replace("/dashboard")
 			}}
 			onSessionEnd={async () => {
+				// YOU IMPLEMENT: clear the impersonated session.
 				await signOutImpersonationSession()
-				navigate("/login")
+				window.location.replace("/login")
 			}}
 		>
 			<ImpersonationBanner />
@@ -38,93 +44,133 @@ function App() {
 }
 ```
 
-Custom banner via children render prop:
+## `DevoraProvider` props
+
+Accepts every [`@devorash/browser` option](https://www.npmjs.com/package/@devorash/browser#configuration)
+as a prop, read once when the provider mounts, plus:
+
+| Prop                   | Description                                                                                  |
+| ---------------------- | -------------------------------------------------------------------------------------------- |
+| `loadingFallback`      | Replaces the "Preparing your session" screen (a `JSX.Element`).                              |
+| `blockedFallback`      | Rendered instead of your app when the tab is bridge-blocked (a `JSX.Element`; default: nothing). |
+| `sessionEndedFallback` | Replaces the "Session ended" screen. `JSX.Element` or `({ reason }) => JSX.Element`.         |
+| `devoraAppUrl`         | Your Devora dashboard URL, shown as a "Back to Devora" link on the ended and invalid-link screens. |
+
+## New tabs and reloads
+
+Pass `sessionBridge` so a reload or new tab restores the session through your backend instead
+of running as an untracked login
+([Session restore](https://www.npmjs.com/package/@devorash/browser#session-restore)). While it
+resolves the provider renders `loadingFallback`; if Devora cannot restore the tab it renders
+`blockedFallback`, which you should provide:
 
 ```tsx
-<ImpersonationBanner>
-	{({ scope, targetUser, endSession }) => (
-		<div class="banner">
-			Viewing {targetUser?.name} ({scope})<button onClick={endSession}>End</button>
-		</div>
-	)}
-</ImpersonationBanner>
+<DevoraProvider
+	apiKey={import.meta.env.VITE_DEVORA_API_KEY}
+	sessionBridge={{
+		restore: async ({ tabRef, signal }) => {
+			const response = await fetch("/api/devora/browser-session", {
+				method: "POST",
+				credentials: "same-origin",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ tabRef }),
+				signal,
+			})
+			if (!response.ok) throw new Error(`Session bridge failed: ${response.status}`)
+			return response.json()
+		},
+	}}
+	blockedFallback={<p>This impersonated session cannot continue in this tab.</p>}
+	onImpersonate={async ({ token }) => signInWithDevoraToken(token)}
+	onSessionEnd={async () => signOutImpersonationSession()}
+>
+	<YourApp />
+</DevoraProvider>
 ```
 
 ## Primitives
 
-### `DevoraProvider`
+Use them inside `DevoraProvider`. Values are accessors: call them (`scope()`) inside JSX or
+effects so Solid tracks updates.
 
-Wrap your app with the provider:
-
-```tsx
-<DevoraProvider
-	apiKey="pk_client_live_xxx"
-	onImpersonate={({ token }) => {}}
-	onSessionEnd={() => {}}
->
-	<App />
-</DevoraProvider>
-```
-
-### `useDevoraImpersonation`
-
-Get impersonation state:
+| Primitive                  | Returns                                                                                               |
+| -------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `useDevoraImpersonation()` | Accessors `isImpersonating`, `scope`, `sessionId`, `expiresAt`, `targetUser`, `impersonator`, `remainingMs`, `userId` (deprecated); `endSession()` |
+| `useDevoraAuth()`          | Accessors `isReady` (false while an impersonation link is being redeemed), `isInitialized`, `isImpersonating`, `scope`; `hadPayloadOnLoad`; `endSession()` |
+| `useDevoraScope()`         | Accessors `scope`, `canWrite`, `isReadOnly`                                                           |
+| `useDevoraSession()`       | Accessors `session`, `isInitialized`                                                                  |
+| `useDevoraReady()`         | Accessor: whether the SDK finished initializing                                                       |
+| `useDevoraError()`         | Accessor: the error `init()` failed with, or `null`                                                   |
+| `useDevoraLogger()`        | `logAction`, `logClick`, `logNavigation` (record only when the project enables custom events)         |
 
 ```tsx
-const { isImpersonating, scope, userId, endSession } = useDevoraImpersonation()
-
-// All values are accessors (reactive signals)
-console.log(isImpersonating()) // boolean
-console.log(scope()) // "read" | "write" | null
+function SessionInfo() {
+	const { isImpersonating, targetUser, remainingMs, endSession } = useDevoraImpersonation()
+	const { canWrite } = useDevoraScope()
+	return (
+		<Show when={isImpersonating()}>
+			<p>
+				Viewing {targetUser()?.email}, {Math.ceil((remainingMs() ?? 0) / 60_000)} min left
+				<button onClick={() => void endSession()}>End session</button>
+			</p>
+			<button disabled={!canWrite()}>Edit</button>
+		</Show>
+	)
+}
 ```
 
-### `useDevoraScope`
-
-Check write permissions:
+## Components
 
 ```tsx
-const { canWrite, isReadOnly } = useDevoraScope()
+// Default banner; props: class, showEndButton, endButtonText, message
+<ImpersonationBanner />
 
-return <button disabled={!canWrite()}>Edit</button>
+// Custom render: values are plain, except remainingMs, which is an accessor
+<ImpersonationBanner>
+	{({ scope, targetUser, remainingMs, endSession }) => (
+		<div class="banner">
+			Viewing {targetUser?.name} ({scope}), {Math.ceil((remainingMs() ?? 0) / 60_000)} min left
+			<button onClick={() => void endSession()}>End</button>
+		</div>
+	)}
+</ImpersonationBanner>
+
+// Disabled while read-only; `hide` renders nothing, `fallback` renders alternative content
+<ReadOnlyGuard fallback={<p>Unavailable in read-only mode</p>}>
+	<button>Delete account</button>
+</ReadOnlyGuard>
+
+// Intercepts clicks while read-only and calls onBlocked with the message
+<WriteProtected blockedMessage="Cannot edit in view-only mode" onBlocked={(message) => showToast(message)}>
+	<button>Save changes</button>
+</WriteProtected>
 ```
 
-### `useDevoraLogger`
+UI guards improve UX only. Your backend impersonation guard is the enforcement boundary.
 
-Log actions:
-
-```tsx
-const { logClick, logNavigation } = useDevoraLogger()
-
-return <button onClick={() => logClick("submit-btn")}>Submit</button>
-```
-
-### `useDevoraReady`
-
-Check if SDK is initialized:
-
-```tsx
-const isReady = useDevoraReady()
-
-return (
-	<Show when={isReady()} fallback={<Loading />}>
-		<App />
-	</Show>
-)
-```
+`DevoraMask`, `DevoraBlock` and `<DevoraRegion name="…">` add `data-devora-*` labels around
+their children. They change nothing on their own: recording and masking are configured by a
+Devora administrator in the dashboard, and a label takes effect only once an administrator
+selects it in Settings. Sensitive fields are always masked.
 
 ## Default screens
 
-`DevoraProvider` renders a plain, dependency-free screen by default for states your app would otherwise have no UI for — each backs off if you already handle it yourself:
+`DevoraProvider` renders a plain, dependency-free screen for states your app would otherwise
+have no UI for:
 
-- **Preparing** — while the SDK is exchanging the one-time link. Override with `loadingFallback`.
-- **A blocked write** — a dialog naming the specific method + path that was blocked (from the SDK's own scope-violation event), with Copy details / OK. Suppressed if you pass `onError={{ scopeViolation: ... }}`.
-- **Session ended** — shown for a reason worth explaining (the time limit was reached, or access was ended from Devora); not shown for a deliberate `endSession()` call. Override with `sessionEndedFallback`.
-- **Link invalid** — the exchange failed (expired, already used, or malformed). Suppressed if you pass `onError={{ payloadError: ... }}`.
-
-The session-ended and link-invalid screens show a "Back to Devora" link when you set `devoraAppUrl` on `DevoraProvider`:
+- **Preparing** — while the SDK redeems a one-time link, or while a configured
+  `sessionBridge` resolves. Override with `loadingFallback`.
+- **Blocked write** — a dialog naming the blocked method and path. Not shown if you pass
+  `onError={{ scopeViolation }}`.
+- **Session ended** — after the time limit is reached or access is ended from Devora; not after
+  your own `endSession()` call. Override with `sessionEndedFallback`.
+- **Link invalid** — the link was forwarded, already used, expired or malformed. Not shown if
+  you pass `onError={{ payloadError }}`.
 
 ```tsx
-<DevoraProvider apiKey="pk_client_live_xxx" devoraAppUrl="https://app.your-devora-dashboard.example">
+<DevoraProvider apiKey={import.meta.env.VITE_DEVORA_API_KEY} devoraAppUrl="https://app.devora.sh">
+	<YourApp />
+</DevoraProvider>
 ```
 
 ## License

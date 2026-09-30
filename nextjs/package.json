@@ -1,6 +1,6 @@
 {
 	"name": "@devorash/nextjs",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Devora Next.js adapter — App Router route handlers, scope guard, and client provider",
 	"keywords": [
 		"app-router",

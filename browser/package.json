@@ -1,6 +1,6 @@
 {
 	"name": "@devorash/browser",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Devora Frontend JavaScript SDK for secure impersonation",
 	"keywords": [
 		"browser",

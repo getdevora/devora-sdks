@@ -1,12 +1,10 @@
 # @devorash/vue
 
-Recording, masking and activity preferences are configured in Devora Settings.
-SDK initialization overrides are ignored. New sessions retain the server's policy
-snapshot across exchange and resume. Developer privacy labels take effect only
-when selected in Settings; sensitive-field protection remains mandatory.
-See [migration details](https://github.com/getdevora/devora-sdks/blob/main/SETTINGS.md).
+Vue 3 composables and components for Devora impersonation. Wraps
+[`@devorash/browser`](https://www.npmjs.com/package/@devorash/browser).
 
-Vue SDK for Devora - composables for impersonation.
+Supports Vue 3.3 and later. State is app-global and browser-only: initialize it on the client
+only (for Nuxt, from a client-only component or plugin), never during server rendering.
 
 ## Installation
 
@@ -14,22 +12,29 @@ Vue SDK for Devora - composables for impersonation.
 npm install @devorash/vue
 ```
 
-## Quick Start
+Use a client key (`pk_client_live_…`) and list your app's origin under **Developer →
+Integration → Allowed origins (client keys)** in the Devora dashboard.
+
+## Quick start
+
+Call `useDevora()` once, in the `<script setup>` of your root component:
 
 ```vue
 <!-- App.vue -->
-<script setup>
+<script setup lang="ts">
 import { useDevora, ImpersonationBanner } from "@devorash/vue"
 
 useDevora({
-	apiKey: "pk_client_live_xxx",
-	onImpersonate: async ({ token, data }) => {
+	apiKey: import.meta.env.VITE_DEVORA_API_KEY,
+	onImpersonate: async ({ token }) => {
+		// YOU IMPLEMENT: turn `token` into your app's logged-in session.
 		await signInWithDevoraToken(token)
-		if (data?.theme) setTheme(data.theme)
+		window.location.replace("/dashboard")
 	},
 	onSessionEnd: async () => {
+		// YOU IMPLEMENT: clear the impersonated session.
 		await signOutImpersonationSession()
-		router.push("/login")
+		window.location.replace("/login")
 	},
 })
 </script>
@@ -40,88 +45,127 @@ useDevora({
 </template>
 ```
 
-Custom banner via the default slot:
+`useDevora(config)` accepts every
+[`@devorash/browser` option](https://www.npmjs.com/package/@devorash/browser#configuration)
+and initializes the SDK when the calling component mounts. It must run inside a component's
+`setup()`. If it is called again elsewhere, the first caller's configuration is kept. It returns
+`{ sdk, isInitialized, isImpersonating, bridgeState, session, initError }`.
+
+## New tabs and reloads
+
+Pass `sessionBridge` so a reload or new tab restores the session through your backend instead
+of running as an untracked login
+([Session restore](https://www.npmjs.com/package/@devorash/browser#session-restore)). Vue has
+no provider that gates your app, so wrap protected content in `BridgeGuard`: it renders its
+`#pending` slot until the bridge resolves, its `#fallback` slot if the tab is blocked, and your
+content otherwise (both slots default to nothing).
 
 ```vue
-<ImpersonationBanner v-slot="{ scope, targetUser, impersonator, remainingMs, endSession }">
-  <div class="banner">
-    <span>Viewing {{ targetUser?.name }} ({{ scope }})</span>
-    <button @click="endSession">End</button>
-  </div>
-</ImpersonationBanner>
+<script setup lang="ts">
+import { useDevora, BridgeGuard } from "@devorash/vue"
+
+useDevora({
+	apiKey: import.meta.env.VITE_DEVORA_API_KEY,
+	sessionBridge: {
+		restore: async ({ tabRef, signal }) => {
+			const response = await fetch("/api/devora/browser-session", {
+				method: "POST",
+				credentials: "same-origin",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ tabRef }),
+				signal,
+			})
+			if (!response.ok) throw new Error(`Session bridge failed: ${response.status}`)
+			return response.json()
+		},
+	},
+	onImpersonate: async ({ token }) => signInWithDevoraToken(token),
+	onSessionEnd: async () => signOutImpersonationSession(),
+})
+</script>
+
+<template>
+	<BridgeGuard>
+		<RouterView />
+		<template #pending><p>Loading…</p></template>
+		<template #fallback><p>This impersonated session cannot continue in this tab.</p></template>
+	</BridgeGuard>
+</template>
 ```
 
 ## Composables
 
-### `useDevora`
-
-Initialize SDK (call once in app root):
-
-```vue
-<script setup>
-import { useDevora } from "@devorash/vue"
-
-const { sdk, isInitialized, isImpersonating, session } = useDevora({
-	apiKey: "pk_client_live_xxx",
-	onImpersonate: ({ token }) => {
-		// Handle login
-	},
-})
-</script>
-```
-
-### `useDevoraImpersonation`
-
-Get impersonation state:
+| Composable                 | Returns                                                                                                   |
+| -------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `useDevoraImpersonation()` | Refs `isImpersonating`, `scope`, `sessionId`, `expiresAt`, `targetUser`, `impersonator`, `remainingMs` (ticks every second), `userId` (deprecated); `endSession()`, `getRemainingMs()` |
+| `useDevoraAuth()`          | `isReady` (false while an impersonation link is being redeemed), `isInitialized`, `isImpersonating`, `initError`, `scope`, `hadPayloadOnLoad`, `endSession()` |
+| `useDevoraScope()`         | Refs `scope`, `canWrite`, `isReadOnly`                                                                    |
+| `useDevoraSession()`       | Refs for each `SessionState` field plus `isInitialized`                                                   |
+| `useDevoraReady()`         | Ref: whether the SDK finished initializing                                                                |
+| `useDevoraBridge()`        | Refs `bridgeState`, `isBlocked`, `isPending`                                                              |
+| `useDevoraSessionState()`  | Refs `payloadError`, `lastEndReason`, `activeViolation`; `dismissViolation()`                             |
+| `useDevoraLogger()`        | `logAction`, `logClick`, `logNavigation` (record only when the project enables custom events)             |
 
 ```vue
-<script setup>
-import { useDevoraImpersonation } from "@devorash/vue"
+<script setup lang="ts">
+import { useDevoraImpersonation, useDevoraScope } from "@devorash/vue"
 
-const { isImpersonating, scope, userId, endSession } = useDevoraImpersonation()
-</script>
-```
-
-### `useDevoraScope`
-
-Check write permissions:
-
-```vue
-<script setup>
-import { useDevoraScope } from "@devorash/vue"
-
+const { isImpersonating, targetUser, remainingMs, endSession } = useDevoraImpersonation()
 const { canWrite, isReadOnly } = useDevoraScope()
 </script>
 
 <template>
-	<button :disabled="!canWrite">Edit</button>
-	<p v-if="isReadOnly">Read-only mode</p>
+	<p v-if="isImpersonating">
+		Viewing {{ targetUser?.email }}, {{ Math.ceil((remainingMs ?? 0) / 60_000) }} min left
+		<button @click="endSession">End session</button>
+	</p>
+	<button :disabled="!canWrite">{{ isReadOnly ? "Read only" : "Edit" }}</button>
 </template>
 ```
 
-### `useDevoraLogger`
-
-Log actions:
+## Components
 
 ```vue
-<script setup>
-import { useDevoraLogger } from "@devorash/vue"
+<!-- Default banner; props: class, showEndButton, endButtonText, message -->
+<ImpersonationBanner />
 
-const { logClick, logNavigation } = useDevoraLogger()
-</script>
+<!-- Custom banner through the default slot -->
+<ImpersonationBanner v-slot="{ scope, targetUser, remainingMs, endSession }">
+	<div class="banner">
+		<span>Viewing {{ targetUser?.name }} ({{ scope }})</span>
+		<button @click="endSession">End</button>
+	</div>
+</ImpersonationBanner>
 
-<template>
-	<button @click="logClick('submit-btn')">Submit</button>
-</template>
+<!-- Disabled while read-only; `hide` renders nothing, #fallback renders alternative content -->
+<ReadOnlyGuard>
+	<button>Delete account</button>
+	<template #fallback><p>Unavailable in read-only mode</p></template>
+</ReadOnlyGuard>
+
+<!-- Intercepts clicks while read-only and emits `blocked` with the message -->
+<WriteProtected blocked-message="Cannot edit in view-only mode" @blocked="showToast">
+	<button>Save changes</button>
+</WriteProtected>
 ```
+
+UI guards improve UX only. Your backend impersonation guard is the enforcement boundary.
+
+`v-devora-mask`, `v-devora-block` and `v-devora-region="'name'"` (directives `vDevoraMask`,
+`vDevoraBlock`, `vDevoraRegion`) and the `DevoraMask`, `DevoraBlock` and `DevoraRegion`
+components add `data-devora-*` labels. They change nothing on their own: recording and masking
+are configured by a Devora administrator in the dashboard, and a label takes effect only once an
+administrator selects it in Settings. Sensitive fields are always masked.
 
 ## Default screens
 
-Unlike `@devorash/react`/`@devorash/solid`, Vue has no provider component to render these automatically — Vue's `useDevora()` is a composable, not something that wraps and replaces your app's children. Instead, `@devorash/vue` exports plain, dependency-free components for the same states; place whichever ones you want once near your app root and they show or hide themselves reactively:
+Vue has no provider that wraps your app, so `@devorash/vue` exports the default screens as
+components. Place the ones you want once near your app root; each is a fixed full-viewport
+overlay that shows and hides itself:
 
 ```vue
 <!-- App.vue -->
-<script setup>
+<script setup lang="ts">
 import {
 	useDevora,
 	ImpersonationBanner,
@@ -131,27 +175,29 @@ import {
 	BlockedActionDialog,
 } from "@devorash/vue"
 
-useDevora({ apiKey: "pk_client_live_xxx" /* ... */ })
+useDevora({ apiKey: import.meta.env.VITE_DEVORA_API_KEY /* , onImpersonate, onSessionEnd */ })
 </script>
 
 <template>
 	<SessionPreparingScreen />
-	<SessionEndedScreen devora-app-url="https://app.your-devora-dashboard.example" />
-	<LinkInvalidScreen devora-app-url="https://app.your-devora-dashboard.example" />
+	<SessionEndedScreen devora-app-url="https://app.devora.sh" />
+	<LinkInvalidScreen devora-app-url="https://app.devora.sh" />
 	<BlockedActionDialog />
 	<ImpersonationBanner />
 	<RouterView />
 </template>
 ```
 
-- **`SessionPreparingScreen`** — visible while the SDK is exchanging the one-time link, or while a configured `sessionBridge` hasn't resolved.
-- **`SessionEndedScreen`** — visible right after a session ends for a reason worth explaining (the time limit was reached, or access was ended from Devora); not shown for a deliberate `endSession()` call.
-- **`LinkInvalidScreen`** — visible when the exchange link failed (expired, already used, or malformed).
-- **`BlockedActionDialog`** — visible when a write was blocked in a read-only session; names the real blocked method + path, from the SDK's own scope-violation event.
+- **`SessionPreparingScreen`** — while the SDK redeems a one-time link, or while a configured
+  `sessionBridge` resolves.
+- **`SessionEndedScreen`** — after the time limit is reached or access is ended from Devora;
+  not after your own `endSession()` call.
+- **`LinkInvalidScreen`** — the link was forwarded, already used, expired or malformed.
+- **`BlockedActionDialog`** — a request was blocked in a read-only session; names the method
+  and path.
 
-`SessionEndedScreen` and `LinkInvalidScreen` accept an optional `devora-app-url` prop, shown as a "Back to Devora" link. Each component is a fixed, full-viewport overlay, so it displays correctly no matter where in your template you place it — you don't need to conditionally render them yourself.
-
-For a custom UI built on the same state, `useDevoraSessionState()` exposes the raw reactive values (`payloadError`, `lastEndReason`, `activeViolation`, `dismissViolation()`) and `useDevoraBridge()` exposes `isPending`.
+`devora-app-url` adds a "Back to Devora" link. Unlike the React and Solid providers, these
+components show even if you pass your own `onError` handlers; leave out the ones you replace.
 
 ## License
 

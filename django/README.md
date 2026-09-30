@@ -1,34 +1,51 @@
 # devora-django
 
-Recording, masking and activity preferences are configured in Devora Settings.
-SDK initialization overrides are ignored. New sessions retain the server's policy
-snapshot across exchange and resume. Developer privacy labels take effect only
-when selected in Settings; sensitive-field protection remains mandatory.
-See [migration details](https://github.com/getdevora/devora-sdks/blob/main/SETTINGS.md).
+Recording, masking and capture policy are configured in the Devora dashboard and
+authorized server-side for each session. This backend SDK takes no capture
+settings, and `devora_sdk()` ignores keyword arguments it does not recognize,
+so check option names carefully. See
+[capture settings](https://github.com/getdevora/devora-sdks/blob/main/SETTINGS.md).
 
 Django adapter for the Devora Python backend SDK.
 
 ## Requirements
 
 - Python `>=3.10,<4.0`
-- Django `>=5.2,<7.0`
+- Django `>=5.2.17,<7.0`, excluding `6.0.0` through `6.0.7` (on Django 6.0, use `6.0.8` or newer)
+- In production, a replay store shared by every worker (the example below uses
+  Redis 6.2 or newer, for `SET ... PXAT`)
 
 ## Install
 
 ```bash
-pip install devora-python devora-django
+pip install devora-python devora-django redis
 ```
 
 ## Quick Start
 
 ```python
 # devora_integration.py
+import os
+
+import redis
 from devora_sdk import DEVORA_ENDPOINTS, devora_sdk
 
+# Replay protection shared by every worker and instance (required in production).
+redis_client = redis.Redis.from_url(os.environ["REDIS_URL"])
+
+
+class RedisReplayStore:
+    def consume(self, namespace: str, request_id: str, expires_at: int) -> bool:
+        # Atomic insert-if-absent kept until expires_at; an exception makes the SDK fail closed (503).
+        key = f"devora:replay:{namespace}:{request_id}"
+        return bool(redis_client.set(key, b"1", nx=True, pxat=expires_at))
+
+
 sdk = devora_sdk(
-    api_key="pk_server_live_...",
-    secret_key="sk_server_live_...",
-    org_id="org_...",
+    api_key=os.environ["DEVORA_API_KEY"],  # pk_server_live_...
+    secret_key=os.environ["DEVORA_SECRET_KEY"],  # sk_server_live_...
+    org_id=os.environ["DEVORA_ORG_ID"],
+    replay_store=RedisReplayStore(),
 )
 
 
@@ -48,34 +65,38 @@ urlpatterns = [
 ]
 ```
 
-Use `async_django_urlpatterns(sdk)` instead when your exposed handlers are
-async functions.
+Register every handler before building the URL patterns; routes registered
+later are not mounted. If any handler is an `async def` function, use
+`async_django_urlpatterns(sdk)` instead (it runs sync handlers in a worker
+thread too); `django_urlpatterns` answers an async handler with
+`400 HANDLER_ERROR`.
 
-For protected application routes, install the guard middleware and extract a
-trusted impersonation context from your authenticated request state.
+The environment comes from `environment=`, else `DEVORA_ENV`, else `NODE_ENV`.
+Anything other than `development` or `test` (including unset) is production,
+and production refuses to start without a `replay_store`. Any store whose
+`consume` is an atomic insert-if-absent shared by every worker works; see the
+[replay-store contract](https://github.com/getdevora/devora-sdks/blob/main/SIGNING.md#replay-store).
+`consume` must be a regular (not `async def`) method.
+
+**Local development only:** to run without Redis, omit `replay_store` and set
+`DEVORA_ENV=development` (or pass `environment="development"`). The SDK then
+keeps request ids in memory, which protects a single process only. Never use
+this in production.
+
+For protected application routes, install the guard middleware and return the
+context dict your `IMPERSONATE` handler stored, read back from your
+authenticated request state.
 
 ```python
-from devora_sdk import ImpersonationContext
+# devora_guard.py
 from devora_sdk_django import create_impersonation_guard
 from .devora_integration import sdk
 
 
 def get_impersonation_context(request):
-    devora = getattr(request.user, "devora", None)
-    if not devora:
-        return None
-    return ImpersonationContext(
-        is_impersonation=devora["isImpersonation"],
-        scope=devora["scope"],
-        session_id=devora["sessionId"],
-        expires_at=devora["expiresAt"],
-        actor=devora["actor"],
-        subject=devora["subject"],
-        auth_method=devora["authMethod"],
-        authorization_source=devora["authorizationSource"],
-        recording_allowed=devora["recordingAllowed"],
-        impersonator=devora.get("impersonator"),
-    )
+    # YOU IMPLEMENT: return the dict your IMPERSONATE handler stored, read from
+    # your verified session (never from headers or JSON the browser can set), or None.
+    return getattr(request.user, "devora", None)
 
 
 DevoraGuardMiddleware = create_impersonation_guard(
@@ -84,8 +105,9 @@ DevoraGuardMiddleware = create_impersonation_guard(
 )
 ```
 
-Add `"yourapp.devora_integration.DevoraGuardMiddleware"` to `settings.MIDDLEWARE`,
-after your own authentication middleware.
+Add `"yourapp.devora_guard.DevoraGuardMiddleware"` to `settings.MIDDLEWARE`,
+after your own authentication middleware, so `request.user` is set when the
+guard runs.
 
 `expires_at` must be a Unix timestamp in milliseconds. If your JWT stores Unix
 seconds, multiply by `1000` when building the impersonation context. `actor`,
@@ -110,3 +132,6 @@ Set `DATA_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024` and keep earlier middleware from
 buffering larger SDK bodies. WSGI/ASGI servers and reverse proxies also need
 request-size and read-timeout limits: Django's ASGI handler can spool a request
 before a view runs, and the SDK cannot bound that prior allocation.
+
+Options, error codes and the browser-session bridge are documented in the
+[Python reference](https://docs.devora.sh/reference/python).
