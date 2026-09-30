@@ -10,8 +10,8 @@ implementation: [`test/signing-v3-vectors.json`](./test/signing-v3-vectors.json)
 
 | Direction            | Signed by              | Verified by                     | Used for                                                            |
 | -------------------- | ---------------------- | ------------------------------- | ------------------------------------------------------------------- |
-| `devora-to-customer` | Devora                 | Your backend (the SDK adapters) | User search, user lookup, impersonation start and terminate, health |
-| `customer-to-devora` | Your backend (the SDK) | Devora                          | Session liveness, browser resume codes                              |
+| `devora-to-customer` | Devora                 | Your backend (the SDK adapters) | User search, user lookup, impersonation start and terminate, test, health |
+| `customer-to-devora` | Your backend (the SDK) | Devora                          | Endpoint policy, session liveness, browser resume codes             |
 
 Each verifier accepts only its own direction, so a request can never be
 replayed back at its sender.
@@ -20,7 +20,9 @@ replayed back at its sender.
 
 The HMAC key is the ASCII bytes of the full server secret
 (`sk_server_live_` followed by 64 characters). The key id is
-`pk_server_live_` followed by 32 characters.
+`pk_server_live_` followed by 32 characters. Your backend verifies only the
+one key id it is configured with; Devora accepts any active server key of your
+organization.
 
 ## Headers
 
@@ -98,15 +100,14 @@ up request ids. Unsigned or invalid requests are rejected before route lookup.
 shared by every instance of your backend, and must keep each entry until
 `expiresAt` (Unix milliseconds). The namespace is
 `v3:<direction>:<key id>`, and `expiresAt` is
-`(max(now, sent-at) + tolerance + 2) * 1000`. For example, with Redis:
+`(max(now, sent-at) + tolerance + 2) * 1000`. For example, with a connected
+[node-redis](https://www.npmjs.com/package/redis) client:
 
 ```ts
 const replayStore = {
 	async consume(namespace: string, requestId: string, expiresAt: number) {
-		const reply = await redis.set(`devora:${namespace}:${requestId}`, "1", {
-			NX: true,
-			PXAT: expiresAt,
-		})
+		const key = `devora:replay:${namespace}:${requestId}`
+		const reply = await redis.sendCommand<string | null>(["SET", key, "1", "NX", "PXAT", String(expiresAt)])
 		return reply === "OK"
 	},
 }

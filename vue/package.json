@@ -1,6 +1,6 @@
 {
 	"name": "@devorash/vue",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Devora Vue SDK - composables for impersonation",
 	"keywords": [
 		"composables",

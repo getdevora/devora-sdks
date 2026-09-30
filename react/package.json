@@ -1,6 +1,6 @@
 {
 	"name": "@devorash/react",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Devora React SDK - hooks and components for impersonation",
 	"keywords": [
 		"devora",

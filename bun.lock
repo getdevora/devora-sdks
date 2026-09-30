@@ -16,7 +16,7 @@
     },
     "core": {
       "name": "@devorash/core",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "devDependencies": {
         "@types/node": "^26.0.1",
         "typescript": "^6.0.3"
@@ -24,7 +24,7 @@
     },
     "node": {
       "name": "@devorash/node",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@devorash/core": "workspace:*"
       },
@@ -35,7 +35,7 @@
     },
     "browser": {
       "name": "@devorash/browser",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@devorash/core": "workspace:*",
         "@rrweb/rrweb-plugin-console-record": "2.0.1",
@@ -50,7 +50,7 @@
     },
     "express": {
       "name": "@devorash/express",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@devorash/core": "workspace:*",
         "@devorash/node": "workspace:*"
@@ -67,7 +67,7 @@
     },
     "fastify": {
       "name": "@devorash/fastify",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@devorash/core": "workspace:*",
         "@devorash/node": "workspace:*"
@@ -83,7 +83,7 @@
     },
     "hono": {
       "name": "@devorash/hono",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@devorash/core": "workspace:*",
         "@devorash/node": "workspace:*"
@@ -99,7 +99,7 @@
     },
     "react": {
       "name": "@devorash/react",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@devorash/browser": "workspace:*",
         "@devorash/core": "workspace:*"
@@ -115,7 +115,7 @@
     },
     "vue": {
       "name": "@devorash/vue",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@devorash/browser": "workspace:*",
         "@devorash/core": "workspace:*"
@@ -130,7 +130,7 @@
     },
     "svelte": {
       "name": "@devorash/svelte",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@devorash/browser": "workspace:*",
         "@devorash/core": "workspace:*"
@@ -145,7 +145,7 @@
     },
     "solid": {
       "name": "@devorash/solid",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@devorash/browser": "workspace:*",
         "@devorash/core": "workspace:*"
@@ -162,7 +162,7 @@
     },
     "nextjs": {
       "name": "@devorash/nextjs",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "@devorash/core": "workspace:*",
         "@devorash/node": "workspace:*",

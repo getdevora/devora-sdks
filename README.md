@@ -1,11 +1,11 @@
 # Devora SDKs
 
-This directory contains all the Devora SDKs for enabling secure impersonation in customer applications.
+This repository contains the Devora SDKs for enabling secure impersonation in customer applications.
 
 ## Package Structure
 
 ```
-sdks/
+devora-sdks/
 ├── core/           # @devorash/core - Shared types, constants, and utilities
 ├── node/           # @devorash/node - Node.js backend SDK
 ├── browser/        # @devorash/browser - Core frontend JavaScript SDK
@@ -56,6 +56,8 @@ sdks/
 
 ## Installation
 
+Full guides: [docs.devora.sh](https://docs.devora.sh). Recording, masking, capture and endpoint policy are configured in the Devora dashboard and delivered per session; SDK options cannot enable or override them (see [SETTINGS.md](./SETTINGS.md)).
+
 ### Backend SDK (Node.js + Express example)
 
 ```bash
@@ -67,9 +69,12 @@ import { devoraSDK, DEVORA_ENDPOINTS } from "@devorash/node"
 import { expressAdapter } from "@devorash/express"
 
 const sdk = devoraSDK({
-	apiKey: process.env.DEVORA_API_KEY!,
-	secretKey: process.env.DEVORA_SECRET_KEY!,
-	orgId: "your-org-id",
+	apiKey: process.env.DEVORA_API_KEY!, // pk_server_live_…
+	secretKey: process.env.DEVORA_SECRET_KEY!, // sk_server_live_…
+	orgId: process.env.DEVORA_ORG_ID!,
+	// Required in production: an atomic insert-if-absent shared by every
+	// instance (see SIGNING.md, "Replay store").
+	replayStore,
 })
 
 await sdk.ready
@@ -79,18 +84,16 @@ sdk.register(DEVORA_ENDPOINTS.USER_SEARCH, async (req) => {
 	return { users: await searchUsers(term) }
 })
 
+sdk.register(DEVORA_ENDPOINTS.USER_BY_ID, async (req) => {
+	return { user: await findUser(req.params.id) }
+})
+
 sdk.register(DEVORA_ENDPOINTS.IMPERSONATE, async (req) => {
 	const ctx = req.devoraContext
 	if (!ctx) throw new Error("Missing verified Devora context")
 
-	return {
-		token: await generateToken(ctx.targetUser.id, {
-			sessionId: ctx.sessionId,
-			scope: ctx.scope,
-			expiresAt: ctx.expiresAt,
-		}),
-		data: {},
-	}
+	// Store ctx unchanged in the credential: the backend guard reads it back.
+	return { token: await generateToken(ctx.targetUser.id, ctx) }
 })
 
 sdk.register(DEVORA_ENDPOINTS.TERMINATE, async (req) => {
@@ -99,6 +102,7 @@ sdk.register(DEVORA_ENDPOINTS.TERMINATE, async (req) => {
 	return { success: true }
 })
 
+// Mount before any application-wide body parser.
 app.use("/devora", expressAdapter(sdk))
 ```
 
@@ -109,31 +113,31 @@ npm install @devorash/browser @devorash/react
 ```
 
 ```tsx
-import { DevoraProvider, useDevoraImpersonation } from "@devorash/react"
+import { DevoraProvider, ImpersonationBanner } from "@devorash/react"
 
 function App() {
 	return (
-		<DevoraProvider apiKey="pk_client_live_xxx">
+		<DevoraProvider
+			apiKey="pk_client_live_xxx"
+			onImpersonate={async ({ token }) => {
+				// Turn the credential your backend returned into your app's session.
+				await acceptImpersonationCredential(token)
+				window.location.replace("/dashboard")
+			}}
+			onSessionEnd={async () => {
+				// Clear the impersonated session and return to a safe route.
+				await signOut()
+				window.location.replace("/login")
+			}}
+		>
+			<ImpersonationBanner />
 			<YourApp />
 		</DevoraProvider>
 	)
 }
-
-function YourApp() {
-	const { isImpersonating, scope, endSession } = useDevoraImpersonation()
-
-	return (
-		<>
-			{isImpersonating && (
-				<Banner>
-					Impersonation Mode ({scope})<button onClick={endSession}>End</button>
-				</Banner>
-			)}
-			{/* Your app content */}
-		</>
-	)
-}
 ```
+
+The browser origin must be listed under **Developer → Integration → Allowed origins (client keys)** in the Devora dashboard; an empty list denies every client key.
 
 ### Backend Scope Enforcement (Defense-in-Depth)
 
@@ -146,47 +150,38 @@ import { createImpersonationGuard } from "@devorash/express"
 app.use(
 	createImpersonationGuard({
 		sdk,
-		// Extract impersonation context from JWT claims
-		getImpersonationContext: (req) => req.user?.devora,
+		// The Devora context stored in your verified JWT or server-side session
+		getImpersonationContext: (req) => req.user?.devora ?? null,
 	})
 )
 ```
 
-Whitelist and blocklist rules are managed only in Devora Settings. Both frontend and backend
-SDKs fetch the same versioned policy at initialization, cache it for five minutes, and retain a
-bounded stale copy for temporary Devora outages. The backend guard fails closed if no policy is
-available.
+Endpoint rules are managed only in the Devora dashboard (**Developer → Endpoint rules**). The
+backend SDK fetches the versioned policy at initialization and the browser SDK during a session;
+both cache it for five minutes and retain a bounded stale copy for temporary Devora outages. The
+backend guard fails closed if no policy is available.
 
-For this to work, embed impersonation context in your JWT during token generation:
+For this to work, embed the verified impersonation context in your JWT or session during token generation:
 
 ```typescript
 sdk.register(DEVORA_ENDPOINTS.IMPERSONATE, async (req) => {
-	// SECURITY: Use req.devoraContext (validated via HMAC) instead of raw req.body
-	// This prevents clients from forging impersonation context
-	const { sessionId, scope, expiresAt, impersonator, targetUser } = req.devoraContext
+	// SECURITY: Use req.devoraContext (set only after the signed request is verified)
+	// instead of raw req.body, so clients cannot forge impersonation context.
+	const ctx = req.devoraContext
+	if (!ctx) throw new Error("Missing verified Devora context")
 
 	// Look up the target user from YOUR database (don't trust client-provided user data)
-	const user = await db.users.findById(targetUser.id)
+	const user = await db.users.findById(ctx.targetUser.id)
 	if (!user) {
 		throw new Error("User not found")
 	}
 
-	// Validate the requestor is authorized to impersonate (your business logic)
-	// e.g., check if impersonator has admin role, same organization, etc.
-
 	const token = generateJWT({
 		sub: user.id,
-		email: user.email,
-		devora: {
-			isImpersonation: true,
-			scope: scope, // Use validated scope from devoraContext
-			sessionId: sessionId, // Use validated sessionId from devoraContext
-			expiresAt: expiresAt, // Use validated expiresAt from devoraContext
-			impersonator: {
-				id: impersonator.id,
-				email: impersonator.email,
-			},
-		},
+		// Keep every field: the guard requires scope, sessionId, expiresAt (ms),
+		// actor/subject, authMethod, authorizationSource and recordingAllowed.
+		devora: ctx,
+		exp: Math.floor(ctx.expiresAt / 1000),
 	})
 
 	return { token }
@@ -195,11 +190,10 @@ sdk.register(DEVORA_ENDPOINTS.IMPERSONATE, async (req) => {
 
 **Important Security Notes:**
 
-- Never trust `req.body` for impersonation fields (`sessionId`, `scope`, `expiresAt`, `agent`)
+- Never trust `req.body` for impersonation fields (`sessionId`, `scope`, `expiresAt`, `impersonator`)
 - The `req.devoraContext` is populated by the SDK after verifying the HMAC signature
-- Always validate that the requestor is authorized to impersonate the target user
-- Generate `sessionId` and `expiresAt` server-side if not using Devora's values
-- Configure exact browser origins on every client key; an empty origin list disables the key
+- Never let the customer credential outlive `ctx.expiresAt`
+- Never put a server key ID or secret in frontend code
 
 ## Development
 
@@ -220,33 +214,12 @@ All packages ship **unminified ESM** + TypeScript types. Customers' bundlers min
 
 ```bash
 bun run test:sdks
+bun run test:python-sdks
 bun run verify:sdks-publish   # dry-run pack; ensures no workspace:* in tarballs
 ```
 
 ### Releases
 
-Package publication is pending. JavaScript packages use the `@devorash` npm scope; Python packages use the `devora-` prefix on PyPI. Releases are coordinated across both registries and require verification and explicit approval.
+JavaScript packages are published under the `@devorash` npm scope and Python packages with the `devora-` prefix on PyPI, at the same version. Releases are coordinated across both registries and require verification and explicit approval. See [CHANGELOG.md](./CHANGELOG.md).
 
 See [contribution and release guidance](https://github.com/getdevora/devora-sdks/blob/main/CONTRIBUTING.md). Run `bun run test:sdks` and `bun run verify:sdks-publish` to verify source and package artifacts without publishing.
-
-## Future Packages (Planned)
-
-### Backend SDKs (Other Languages)
-
-- `@devorash/java` - Java backend SDK
-- `@devorash/rust` - Rust backend SDK
-- `@devorash/go` - Go backend SDK
-
-### Backend Framework Adapters
-
-- `@devorash/nestjs` - NestJS adapter
-- `@devorash/koa` - Koa adapter
-- `@devorash/flask` - Flask adapter (Python)
-- `@devorash/actix` - Actix adapter (Rust)
-- `@devorash/axum` - Axum adapter (Rust)
-
-### Frontend Framework Wrappers
-
-- `@devorash/nuxt` - Nuxt module
-- `@devorash/angular` - Angular module
-- `@devorash/qwik` - Qwik integration
