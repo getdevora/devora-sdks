@@ -45,6 +45,9 @@ import type {
 	SessionRevocationState,
 } from "./types.js"
 
+/** Longest a voluntary end holds host logout for the final recording flush. */
+const FINAL_CAPTURE_LOGOUT_WAIT_MS = 1_000
+
 /**
  * Resolve and validate the Devora API origin.
  * Only https origins are accepted (http for localhost/127.0.0.1 development).
@@ -502,6 +505,8 @@ export function createDevoraSDK(): DevoraFrontendSDK {
 		sessionState = { ...sessionState, isActive: false }
 		if (reason !== SDK_END_REASON.TERMINATED_EXTERNALLY) tabs.broadcast({ type: "ended", reason })
 		resetLocalSession()
+		// Read before stopCapture() retires the recorder.
+		const recording = sessionRecorder !== null
 		const capture = stopCapture()
 		emit("impersonation_end", { reason, sessionId })
 		// Queue revocation before host callbacks can navigate away. Capture flushes
@@ -514,12 +519,25 @@ export function createDevoraSDK(): DevoraFrontendSDK {
 			reason !== SDK_END_REASON.TERMINATED_EXTERNALLY && cfg?.apiKey
 				? notifySessionEnd(origin, cfg.apiKey, token, sessionId, wireReason)
 				: Promise.resolve()
-		// Start both host logout callbacks immediately and independently.
+		// A voluntary end's final recording chunk is admitted only while the session
+		// is live, and a host callback that navigates cancels an ordinary upload. So
+		// on a customer-initiated end, let host logout wait briefly for the final
+		// flush. Revocation above is already queued and never waits. Terminations,
+		// revocations and expiry log out immediately: their final chunk is refused.
+		const voluntary =
+			reason !== SDK_END_REASON.TERMINATED_EXTERNALLY && reason !== SDK_END_REASON.EXPIRED
+		const beforeLogout =
+			recording && voluntary
+				? withDeadline(() => capture, FINAL_CAPTURE_LOGOUT_WAIT_MS).catch(() => undefined)
+				: null
+		// Start both host logout callbacks independently.
 		const callbacks = [callback, cfg?.onSessionEnd].filter(
 			(cb, index, all) => cb && all.indexOf(cb) === index
 		)
+		const logout = (cb: (reason: string) => void | Promise<void>) =>
+			withDeadline(() => cb(reason), 2_000)
 		const cleanup = callbacks.map((cb) =>
-			withDeadline(() => cb!(reason), 2_000).catch((error) => {
+			(beforeLogout ? beforeLogout.then(() => logout(cb!)) : logout(cb!)).catch((error) => {
 				logger.error("onSessionEnd callback failed", error)
 				emit("error", { type: "session_logout_failed", sessionId })
 			})

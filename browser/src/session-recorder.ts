@@ -17,12 +17,14 @@ import { strToU8 } from "fflate"
 import {
 	compressRecordingEvents,
 	compressRecordingEventsSync,
+	compressFinalRecordingEventsSync,
 	recordingEventBytes,
 	recordingEventsBytes,
 	recordingPrefixLength,
 	RecordingEncodingLimitError,
 	MAX_RECORDING_QUEUE_BYTES,
 	MAX_SYNC_RECORDING_BYTES,
+	MAX_SYNC_FINAL_RECORDING_BYTES,
 	MAX_UNCOMPRESSED_CHUNK_BYTES,
 	type CompressedEvents,
 } from "./recording-encoding.js"
@@ -1498,7 +1500,15 @@ export class SessionRecorder {
 	private async uploadFormedChunk(chunk: FormedChunk): Promise<void> {
 		this.uploadingChunk = chunk
 		try {
-			chunk.precomputed ??= await compressRecordingEvents(chunk.events)
+			// Queue a small final tail before end-session/logout can race it. Keep
+			// synchronous work strictly bounded; large batches retain async encoding.
+			if (
+				!chunk.precomputed &&
+				chunk.isFinal &&
+				recordingEventsBytes(chunk.events) <= MAX_SYNC_FINAL_RECORDING_BYTES
+			)
+				chunk.precomputed = compressFinalRecordingEventsSync(chunk.events)
+			else chunk.precomputed ??= await compressRecordingEvents(chunk.events)
 			await this.sendChunk(
 				chunk.events,
 				chunk.isFinal,
@@ -1582,7 +1592,9 @@ export class SessionRecorder {
 		})
 
 		while (true) {
-			if (!(await this.retryFailedChunk())) return
+			// A resolved retry promise still yields a microtask. Do not defer the
+			// first final POST when there is no earlier upload to preserve in order.
+			if ((this.keepaliveUpload || this.failedChunk) && !(await this.retryFailedChunk())) return
 
 			const chunk = this.formChunk(isFinal)
 			if (!chunk) break
@@ -1622,6 +1634,41 @@ export class SessionRecorder {
 		if (this.activeFlush) {
 			if (!isFinal) {
 				this.logger.log("Flush skipped - already flushing")
+				return
+			}
+			// A retired recorder has no future events. Queue its bounded final tail
+			// without waiting for an already formed upload's network response. The
+			// server requires every lower index before declaring completeness.
+			// Failed/retry backlogs and large tails retain the ordered path below.
+			if (
+				!this.isRunning &&
+				!this.failedChunk &&
+				!this.keepaliveUpload &&
+				recordingEventsBytes(this.events) <= MAX_SYNC_FINAL_RECORDING_BYTES
+			) {
+				const chunk = this.formChunk(true)
+				if (!chunk) return
+				try {
+					chunk.precomputed = compressFinalRecordingEventsSync(chunk.events)
+					await this.sendChunk(
+						chunk.events,
+						true,
+						chunk.chunkIndex,
+						chunk.startOffset,
+						chunk.endOffset,
+						chunk.precomputed
+					)
+				} catch (error) {
+					this.config.onError?.(error as Error)
+					this.failedChunk = chunk
+					this.maybeTripIntegrityGuard()
+				}
+				// The final tail is already admitted, but an earlier chunk may still be
+				// compressing or uploading. Resolve only after it is sent, so a host that
+				// ends the session after stop() cannot refuse that lower index and leave
+				// the segment incomplete. stopCapture() bounds this wait.
+				const earlier = this.activeFlush
+				if (earlier) await earlier.catch(() => {})
 				return
 			}
 

@@ -240,6 +240,37 @@ class PythonSDKCoreTests(unittest.TestCase):
 		self.assertGreater(result.cached_until, int(time.time() * 1000))
 		fetcher.stop()
 
+	def test_endpoint_rule_edits_remain_cached_until_policy_refresh(self) -> None:
+		server_version = 1
+		requests = 0
+
+		def policy_response(*_args):
+			nonlocal requests
+			requests += 1
+			return 200, {
+				"success": True,
+				"data": {
+					"version": server_version,
+					"safeReadEndpoints": [],
+					"blockedEndpoints": ([{"method": "*", "pattern": "/api/customers/*"}]
+						if server_version == 1 else []),
+					"cachedUntil": int(time.time() * 1000) + 5 * 60_000,
+				},
+			}, {"etag": f"policy-v{server_version}"}
+
+		fetcher = ScopeConfigFetcher(API_KEY, sign_request=lambda: {})
+		try:
+			with patch("devora_sdk.policy.control_plane_request", side_effect=policy_response):
+				self.assertEqual(len(fetcher.get_config().blocked_endpoints), 1)
+				server_version = 2
+				# Changing the server policy does not push an invalidation into this process.
+				self.assertEqual(len(fetcher.get_config().blocked_endpoints), 1)
+				self.assertEqual(requests, 1)
+				self.assertEqual(len(fetcher.refresh().blocked_endpoints), 0)
+				self.assertEqual(requests, 2)
+		finally:
+			fetcher.stop()
+
 	def test_fastapi_router_smoke_when_available(self) -> None:
 		FastAPI, TestClient = self._fastapi_test_tools()
 

@@ -1,0 +1,281 @@
+name: Verify and release SDKs
+
+# Manual dispatch builds an immutable candidate without registry credentials.
+# A protected tag consumes a previously approved candidate; it never rebuilds it.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+concurrency:
+  group: sdk-public-release
+  cancel-in-progress: false
+
+jobs:
+  candidate:
+    if: github.repository == 'getdevora/devora-sdks' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CI: "true"
+      DEVORA_SDK_API_ORIGIN: https://beloved-bee-737.convex.site
+      DEVORA_SDK_EXPECTED_ORIGIN: https://beloved-bee-737.convex.site
+      DEVORA_SDK_DASHBOARD_ORIGIN: https://app.devora.sh
+      DEVORA_SDK_EXPECTED_DASHBOARD_ORIGIN: https://app.devora.sh
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+      - run: npm install --global bun@1.3.14 --ignore-scripts
+        working-directory: ${{ runner.temp }}
+      - run: bun install --frozen-lockfile
+      - run: bun audit --audit-level=high
+      - run: bun run check-types:sdks
+      - run: bun run test:sdks
+      - run: bun run test:python-sdks
+      - run: node scripts/check-npm-publish-ready.mjs --skip-auth
+      - run: bun scripts/generate-api-url.mjs
+      - run: uv run --no-project --python 3.12 scripts/audit-python-deps.py
+      - name: Build and inspect npm artifacts
+        run: node scripts/verify-publish-tarballs.mjs --out-dir release/npm
+      - name: Build and inspect Python artifacts
+        run: node scripts/verify-python-publish.mjs --out-dir release/python --build-only
+      - name: Verify Python distributions
+        run: node scripts/verify-python-publish.mjs --artifacts release/python
+      - name: Verify npm consumer installation
+        run: node scripts/smoke-test-npm-artifacts.mjs --artifacts release/npm
+      # uv may create this ignore marker inside its output directory. It is not
+      # a distribution and must not enter the immutable release artifact.
+      - name: Remove uv output-directory marker
+        run: |
+          if [ -f release/python/.gitignore ]; then
+            test "$(cat release/python/.gitignore)" = '*'
+            rm release/python/.gitignore
+          fi
+      - name: Record exact candidate contents
+        run: node scripts/release-candidate.mjs create release
+      - name: Verify candidate metadata and checksums
+        run: node scripts/release-candidate.mjs verify release
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: sdk-release-candidate
+          path: release/
+          if-no-files-found: error
+          retention-days: 14
+
+  release-gate:
+    if: github.repository == 'getdevora/devora-sdks' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: sdk-release
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    outputs:
+      approved-run: ${{ steps.check.outputs.approved-run }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - id: check
+        name: Verify approved candidate and trusted production readiness
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPROVED_RUN: ${{ vars.SDK_RELEASE_APPROVED_RUN_ID }}
+          MIRROR_APP_ID: ${{ vars.SDK_MIRROR_APP_ID }}
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_REPO: ${{ github.repository }}
+        run: |
+          node <<'NODE'
+          const assert = require('node:assert/strict')
+          const fs = require('node:fs')
+          const { APPROVED_RUN, MIRROR_APP_ID, RELEASE_SHA, RELEASE_TAG, RELEASE_REPO, GH_TOKEN } = process.env
+          const exportMetadata = JSON.parse(fs.readFileSync('.sdk-export.json', 'utf8'))
+          assert.equal(RELEASE_REPO, 'getdevora/devora-sdks')
+          assert.match(APPROVED_RUN || '', /^[1-9][0-9]*$/)
+          assert.match(MIRROR_APP_ID || '', /^[1-9][0-9]*$/)
+          assert.match(RELEASE_TAG || '', /^v[0-9]+\.[0-9]+\.[0-9]+$/)
+          assert.match(exportMetadata.fingerprint || '', /^[a-f0-9]{64}$/)
+          async function api(path) {
+            const response = await fetch('https://api.github.com/repos/' + RELEASE_REPO + path, {
+              headers: { authorization: 'Bearer ' + GH_TOKEN, accept: 'application/vnd.github+json', 'x-github-api-version': '2022-11-28' },
+              signal: AbortSignal.timeout(30000)
+            })
+            if (!response.ok) throw new Error('GitHub release gate API failed: ' + response.status)
+            return response.json()
+          }
+          ;(async () => {
+            const run = await api('/actions/runs/' + APPROVED_RUN)
+            assert.equal(run.event, 'workflow_dispatch')
+            assert.equal(run.path, '.github/workflows/release.yml')
+            assert.equal(run.head_branch, 'main')
+            assert.equal(run.head_sha, RELEASE_SHA)
+            assert.equal(run.conclusion, 'success')
+            assert.equal(run.status, 'completed')
+            assert.ok(Date.now() - Date.parse(run.updated_at) < 14 * 86400000, 'Candidate expired')
+            const artifacts = await api('/actions/runs/' + APPROVED_RUN + '/artifacts?per_page=100')
+            const matches = artifacts.artifacts.filter(x => x.name === 'sdk-release-candidate' && !x.expired && x.workflow_run?.head_sha === RELEASE_SHA)
+            assert.equal(matches.length, 1)
+            assert.match(matches[0].digest || '', /^sha256:[a-f0-9]{64}$/)
+            const checks = await api('/commits/' + RELEASE_SHA + '/check-runs?per_page=100')
+            const expectedSummary = 'Approved SDK candidate run ' + APPROVED_RUN + '; artifact ' + matches[0].digest + '; fingerprint ' + exportMetadata.fingerprint + '; version ' + RELEASE_TAG.slice(1) + '.'
+            const ready = checks.check_runs.filter(x => x.name === 'production-sdk-ready' && String(x.app?.id) === MIRROR_APP_ID && x.head_sha === RELEASE_SHA).sort((a, b) => b.id - a.id)[0]
+            assert.equal(ready?.conclusion, 'success', 'Latest trusted production readiness is required')
+            assert.equal(ready.output?.summary, expectedSummary, 'Readiness does not bind the approved artifact')
+            assert.ok(Date.now() - Date.parse(ready.completed_at) < 86400000, 'Production readiness expired')
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'approved-run=' + APPROVED_RUN + '\n')
+          })().catch(error => { console.error(error.message); process.exitCode = 1 })
+          NODE
+
+  inspect:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: release-gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sdk-release-candidate
+          run-id: ${{ needs.release-gate.outputs.approved-run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/candidate
+      - run: node scripts/release-candidate.mjs verify "$RUNNER_TEMP/candidate"
+      - run: sha256sum --check --strict SHA256SUMS
+        working-directory: ${{ runner.temp }}/candidate
+
+  publish-npm:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [release-gate, inspect]
+    runs-on: ubuntu-latest
+    environment: sdk-release
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+      - run: npm install --global npm@11.6.2 --ignore-scripts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sdk-release-candidate
+          run-id: ${{ needs.release-gate.outputs.approved-run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/candidate
+      - run: sha256sum --check --strict SHA256SUMS
+        working-directory: ${{ runner.temp }}/candidate
+      - name: Publish or verify exact npm tarballs
+        working-directory: ${{ runner.temp }}/candidate
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const crypto = require('node:crypto')
+          const pathModule = require('node:path')
+          const { execFileSync } = require('node:child_process')
+          const meta = JSON.parse(fs.readFileSync('candidate.json', 'utf8'))
+          const names = ['core','node','browser','express','fastify','hono','react','vue','svelte','solid','nextjs']
+          function digest(bytes) { return crypto.createHash('sha256').update(bytes).digest('hex') }
+          ;(async () => {
+            for (const part of names) {
+              const name = '@devorash/' + part
+              const path = 'npm/devorash-' + part + '-' + meta.version + '.tgz'
+              const expected = meta.files.find(x => x.path === path)?.sha256
+              if (!expected || digest(fs.readFileSync(path)) !== expected) throw new Error('Unapproved npm artifact: ' + name)
+              const response = await fetch('https://registry.npmjs.org/' + encodeURIComponent(name) + '/' + meta.version, { signal: AbortSignal.timeout(30000) })
+              if (response.status === 404) {
+                if (!process.env.NODE_AUTH_TOKEN) throw new Error('Bootstrap npm token is required')
+                execFileSync('npm', ['publish', pathModule.resolve(path), '--access', 'public', '--provenance', '--tag', 'latest', '--ignore-scripts'], { cwd: process.env.GITHUB_WORKSPACE, stdio: 'inherit' })
+                continue
+              }
+              if (!response.ok) throw new Error('npm registry check failed: ' + response.status)
+              const packageInfo = await response.json()
+              const tarballUrl = packageInfo.dist?.tarball
+              if (typeof tarballUrl !== 'string' || !tarballUrl.startsWith('https://registry.npmjs.org/')) throw new Error('Untrusted npm tarball URL')
+              const tarball = await fetch(tarballUrl, { signal: AbortSignal.timeout(30000) })
+              if (!tarball.ok || digest(Buffer.from(await tarball.arrayBuffer())) !== expected) throw new Error('Existing npm artifact differs: ' + name)
+              console.log('Verified existing ' + name + '@' + meta.version)
+            }
+          })().catch(error => { console.error(error.message); process.exitCode = 1 })
+          NODE
+
+  publish-pypi:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [release-gate, inspect, publish-npm]
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [devora_python, devora_fastapi, devora_django]
+    runs-on: ubuntu-latest
+    environment: sdk-release
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: sdk-release-candidate
+          run-id: ${{ needs.release-gate.outputs.approved-run }}
+          github-token: ${{ github.token }}
+          path: ${{ runner.temp }}/candidate
+      - run: sha256sum --check --strict SHA256SUMS
+        working-directory: ${{ runner.temp }}/candidate
+      - id: select
+        name: Select only missing verified distributions
+        working-directory: ${{ runner.temp }}/candidate
+        env:
+          PACKAGE_NAME: ${{ matrix.name }}
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs')
+          const path = require('node:path')
+          const crypto = require('node:crypto')
+          const meta = JSON.parse(fs.readFileSync('candidate.json', 'utf8'))
+          const name = process.env.PACKAGE_NAME
+          if (!['devora_python','devora_fastapi','devora_django'].includes(name)) throw new Error('Unknown PyPI project')
+          const expected = meta.files.filter(x => x.path.startsWith('python/' + name + '-' + meta.version))
+          if (expected.length !== 2) throw new Error('Expected wheel and sdist')
+          function digest(bytes) { return crypto.createHash('sha256').update(bytes).digest('hex') }
+          ;(async () => {
+            const response = await fetch('https://pypi.org/pypi/' + name.replace('_','-') + '/' + meta.version + '/json', { signal: AbortSignal.timeout(30000) })
+            if (response.status !== 404 && !response.ok) throw new Error('PyPI registry check failed: ' + response.status)
+            const existing = response.status === 404 ? [] : (await response.json()).urls
+            const missing = []
+            for (const file of expected) {
+              if (digest(fs.readFileSync(file.path)) !== file.sha256) throw new Error('Unapproved PyPI artifact')
+              const match = existing.find(x => x.filename === path.basename(file.path))
+              if (!match) missing.push(file)
+              else if (match.digests?.sha256 !== file.sha256) throw new Error('Existing PyPI artifact differs: ' + file.path)
+            }
+            fs.mkdirSync('publish', { recursive: true })
+            for (const file of missing) fs.copyFileSync(file.path, path.join('publish', path.basename(file.path)))
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'missing=' + (missing.length > 0) + '\n')
+            console.log(name + ': ' + missing.length + ' missing verified distributions')
+          })().catch(error => { console.error(error.message); process.exitCode = 1 })
+          NODE
+      - if: steps.select.outputs.missing == 'true'
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1.14
+        with:
+          packages-dir: ${{ runner.temp }}/candidate/publish/

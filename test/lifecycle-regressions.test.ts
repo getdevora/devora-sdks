@@ -153,6 +153,52 @@ test("host navigation cannot defer revocation behind an unfinished capture flush
 	}
 })
 
+test("a voluntary end holds host logout for the final recording flush, at most one second", async () => {
+	// A host that navigates on logout cancels an in-flight final chunk upload.
+	for (const flush of ["settles", "hangs"] as const) {
+		let finish!: () => void
+		const acquire = spyOn(SessionRecorder, "acquire").mockReturnValue({
+			start() {},
+			stop() {
+				return new Promise<void>((resolve) => {
+					finish = resolve
+				})
+			},
+		} as unknown as SessionRecorder)
+		try {
+			transport(async () => Response.json({ success: true }), true)
+			const base = globalThis.fetch
+			let revoked = false
+			globalThis.fetch = (async (url, init) => {
+				if (String(url).endsWith("/end-session")) revoked = true
+				return base(url, init)
+			}) as typeof fetch
+			const sdk = sdkInstance()
+			let loggedOutAt = 0
+			await start(sdk, {
+				onSessionEnd: () => {
+					loggedOutAt = Date.now()
+				},
+			})
+			const startedAt = Date.now()
+			const ending = sdk.end()
+			await new Promise((resolve) => setTimeout(resolve, 20))
+			// Revocation is never deferred; host logout waits for the final flush.
+			expect(revoked).toBe(true)
+			expect(loggedOutAt).toBe(0)
+			if (flush === "settles") finish()
+			await ending
+			expect(loggedOutAt).toBeGreaterThan(0)
+			const waited = loggedOutAt - startedAt
+			if (flush === "settles") expect(waited).toBeLessThan(500)
+			else expect(waited).toBeGreaterThanOrEqual(950)
+			finish()
+		} finally {
+			acquire.mockRestore()
+		}
+	}
+}, 10_000)
+
 test("revocation failures are truthful and retryable responses retry once", async () => {
 	for (const status of [400, 401, 429, 500]) {
 		let calls = 0

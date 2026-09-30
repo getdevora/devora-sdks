@@ -6,6 +6,8 @@ export const MAX_COMPRESSED_CHUNK_BYTES = 700_000
 export const MAX_UNCOMPRESSED_CHUNK_BYTES = 1_500_000
 export const NORMAL_CHUNK_BYTES = 600_000
 export const MAX_SYNC_RECORDING_BYTES = 24_000
+// Explicit graceful end only. Unload retains its smaller synchronous budget.
+export const MAX_SYNC_FINAL_RECORDING_BYTES = 64_000
 export const MAX_RECORDING_QUEUE_BYTES = 6 * 1024 * 1024
 
 export class RecordingEncodingLimitError extends Error {
@@ -73,6 +75,14 @@ function checked(uncompressed: Uint8Array, compressed: Uint8Array): CompressedEv
 /** Only the small unload prefix uses synchronous compression. */
 export function compressRecordingEventsSync(events: eventWithTime[]): CompressedEvents {
 	if (recordingEventsBytes(events) > MAX_SYNC_RECORDING_BYTES)
+		throw new RecordingEncodingLimitError()
+	const uncompressed = encode(events)
+	return checked(uncompressed, gzipSync(uncompressed, { level: 1, mtime: 0 }))
+}
+
+/** Bounded final encoding before revocation; never compress an arbitrary backlog. */
+export function compressFinalRecordingEventsSync(events: eventWithTime[]): CompressedEvents {
+	if (recordingEventsBytes(events) > MAX_SYNC_FINAL_RECORDING_BYTES)
 		throw new RecordingEncodingLimitError()
 	const uncompressed = encode(events)
 	return checked(uncompressed, gzipSync(uncompressed, { level: 1, mtime: 0 }))
