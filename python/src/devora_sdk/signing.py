@@ -170,15 +170,6 @@ def has_identity_content_encoding(headers: HeaderInput) -> bool:
 	return value is None or value == "identity"
 
 
-def replay_namespace(direction: str, key_id: str) -> str:
-	return f"v{VERSION}:{direction}:{key_id}"
-
-
-def replay_expires_at_ms(sent_at: int, now_seconds: int, tolerance_seconds: int) -> int:
-	"""Covers the floor second of the timestamp check plus one second of jitter."""
-	return (max(now_seconds, sent_at) + tolerance_seconds + 2) * 1000
-
-
 def parse_verified_query(query: str) -> dict[str, Union[str, list[str]]]:
 	"""Parse a verified raw query. Repeated keys become lists in wire order."""
 	result: dict[str, Union[str, list[str]]] = {}

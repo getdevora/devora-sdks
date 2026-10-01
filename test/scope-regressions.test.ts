@@ -5,6 +5,7 @@ import { isAmbiguousRequestPath, isWriteMethod, matchEndpointPattern } from "../
 import { createImpersonationGuard, devoraSDK } from "../node/dist/index.js"
 import cases from "./scope-policy-cases.json"
 import { TEST_KEYS, signTestRequest, signedAdapterRequest } from "./support/signing"
+import { fakeDevora } from "./support/devora-claims"
 
 const require = createRequire(import.meta.url)
 const express = require(
@@ -125,9 +126,9 @@ const policyResponse = () =>
 		},
 	})
 
-test("the exported Node verifier rejects stale and future MACs before consuming a nonce", async () => {
-	globalThis.fetch = async () => policyResponse()
-	const sdk = devoraSDK({ ...TEST_KEYS, environment: "test" })
+test("the exported Node verifier rejects stale and future MACs before claiming the request", async () => {
+	globalThis.fetch = fakeDevora(async () => policyResponse()).fetch
+	const sdk = devoraSDK({ ...TEST_KEYS })
 	try {
 		await sdk.ready
 		for (const delta of [-3600, 3600]) {
@@ -139,7 +140,7 @@ test("the exported Node verifier rejects stale and future MACs before consuming 
 				requestId,
 			})
 			expect((await sdk.verifyRequest(stale)).errorCode).toBe("TIMESTAMP_EXPIRED")
-			// The nonce was not burned: the same id still verifies once when fresh.
+			// The id was not claimed: the same id still verifies once when fresh.
 			const fresh = signedAdapterRequest({ method: "GET", path: "/test", requestId })
 			expect((await sdk.verifyRequest(fresh)).valid).toBe(true)
 		}
@@ -171,7 +172,7 @@ test("Node liveness requests carry a valid customer-to-devora v3 signature", asy
 		}
 		return policyResponse()
 	}
-	const sdk = devoraSDK({ ...TEST_KEYS, environment: "test" })
+	const sdk = devoraSDK({ ...TEST_KEYS })
 	try {
 		await sdk.ready
 		expect(await sdk.getSessionStatus("test_session")).toMatchObject({ valid: true })

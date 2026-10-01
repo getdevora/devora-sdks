@@ -1,10 +1,7 @@
 from __future__ import annotations
 
 import json
-import inspect
-import os
 import re
-import time
 from typing import Any, Callable, Optional
 
 from .constants import (
@@ -15,6 +12,8 @@ from .constants import (
 	PROTECTED_ENDPOINTS,
 	SDK_VERSION,
 	BROWSER_RESUME_CODE_ENDPOINT,
+	REQUEST_CLAIM_ENDPOINT,
+	REQUEST_CLAIM_TIMEOUT_SECONDS,
 	TAB_REF_PATTERN,
 )
 from .hmac import sha256_hex, sign_request, signature_matches
@@ -25,23 +24,18 @@ from .signing import (
 	CUSTOMER_TO_DEVORA,
 	DEVORA_TO_CUSTOMER,
 	build_canonical_string,
+	get_single_header,
 	has_identity_content_encoding,
 	is_valid_signed_path,
 	is_valid_signed_query,
 	matches,
 	parse_signature_headers,
-	replay_expires_at_ms,
-	replay_namespace,
+	parse_verified_json_body,
 )
 from .transport import ControlPlaneError, control_plane_request
-from .replay import InMemoryReplayStore, ReplayStore
 
-
-def resolve_environment(explicit: Optional[str] = None) -> str:
-	"""Explicit option first, then DEVORA_ENV / NODE_ENV as hints, else production."""
-	raw = (explicit or os.environ.get("DEVORA_ENV") or os.environ.get("NODE_ENV") or "production")
-	raw = str(raw).strip().lower()
-	return raw if raw in ("development", "test") else "production"
+# A start request: ``POST .../impersonate/:id`` (path is relative to the SDK mount).
+_START_REQUEST_PATH = re.compile(r"/impersonate/[^/]+\Z")
 
 
 class DevoraBackendSDK:
@@ -54,8 +48,6 @@ class DevoraBackendSDK:
 		collect_stats: bool = False,
 		debug: bool = False,
 		api_url: Optional[str] = None,
-		replay_store: Optional[ReplayStore] = None,
-		environment: Optional[str] = None,
 		prefetch_scope_config: bool = False,
 		**_ignored_options: Any,
 	) -> None:
@@ -77,17 +69,6 @@ class DevoraBackendSDK:
 		self.debug = debug
 		self.stats = SDKStats()
 		self._routes: list[SDKRoute] = []
-		# Fail closed: anything that is not explicitly a development/test runtime
-		# is production, and production must share replay protection across
-		# processes. Explicit option first, then DEVORA_ENV / NODE_ENV as hints.
-		self.environment = resolve_environment(environment)
-		if self.environment == "production" and replay_store is None:
-			raise ValueError(
-				"Devora SDK: replay_store is required in production. Pass a persistent "
-				"ReplayStore, or environment='development' (InMemoryReplayStore) for local "
-				"development only."
-			)
-		self._replay_store = replay_store or InMemoryReplayStore()
 		self._scope_config = ScopeConfigFetcher(
 			api_key=api_key,
 			api_url=self.api_url,
@@ -156,7 +137,8 @@ class DevoraBackendSDK:
 		``path`` is relative to the SDK mount and still percent-encoded; ``query``
 		is everything after the first ``?``; ``body`` is the raw bytes; ``headers``
 		is a mapping or a list of ``(name, value)`` pairs (duplicates are
-		rejected). Steps before the replay store never touch it.
+		rejected). A verified request is then claimed once from Devora; only a
+		request whose signature verified is ever claimed.
 		"""
 		tolerance = self.timestamp_tolerance if timestamp_tolerance is None else timestamp_tolerance
 		if not is_valid_timestamp_tolerance(tolerance):
@@ -198,24 +180,20 @@ class DevoraBackendSDK:
 		if not signature_matches(self._secret_key, canonical, parsed["signature"]):
 			return ValidationResult(valid=False, error="Invalid HMAC signature", error_code="INVALID_SIGNATURE")
 
-		try:
-			fresh = self._replay_store.consume(
-				replay_namespace(DEVORA_TO_CUSTOMER, parsed["key_id"]),
-				parsed["request_id"],
-				replay_expires_at_ms(sent_at, int(time.time()), tolerance),
+		# A start request names the session it starts; Devora lets it be claimed
+		# only while that session is still starting. (A start request without a
+		# valid session ID is claimed plainly; the handler then refuses it.)
+		session_id: Optional[str] = None
+		if method == "POST" and _START_REQUEST_PATH.search(path):
+			body_ok, parsed_body = parse_verified_json_body(
+				bytes(body), get_single_header(headers, "content-type") or None
 			)
-		except Exception:
-			return ValidationResult(
-				valid=False, error="Replay protection is unavailable", error_code="REPLAY_STORE_UNAVAILABLE"
-			)
-		if not isinstance(fresh, bool):
-			if inspect.iscoroutine(fresh):
-				fresh.close()
-			return ValidationResult(
-				valid=False, error="Replay store must return a boolean decision", error_code="REPLAY_STORE_UNAVAILABLE"
-			)
-		if not fresh:
-			return ValidationResult(valid=False, error="Request was already processed", error_code="REPLAYED_REQUEST")
+			value = parsed_body.get("sessionId") if body_ok and isinstance(parsed_body, dict) else None
+			if isinstance(value, str) and value and len(value) <= 128:
+				session_id = value
+		rejection = self._claim_request(parsed["request_id"], parsed["sent_at"], session_id)
+		if rejection is not None:
+			return rejection
 		return ValidationResult(
 			valid=True,
 			org_id=parsed["org_id"],
@@ -233,7 +211,41 @@ class DevoraBackendSDK:
 	def refresh_scope_config(self) -> Optional[ScopeConfig]:
 		return self._scope_config.refresh()
 
-	def _signed_devora_post(self, path: str, payload: dict[str, Any]) -> tuple[int, Optional[dict[str, Any]]]:
+	def _claim_request(
+		self, request_id: str, sent_at: str, session_id: Optional[str]
+	) -> Optional[ValidationResult]:
+		"""Claim a verified request id from Devora: ``None`` for the first claim,
+		otherwise the rejection. Anything but a clear answer fails closed."""
+		payload: dict[str, Any] = {"requestId": request_id, "sentAt": sent_at}
+		if session_id is not None:
+			payload["sessionId"] = session_id
+		try:
+			status, reply = self._signed_devora_post(
+				REQUEST_CLAIM_ENDPOINT, payload, timeout=REQUEST_CLAIM_TIMEOUT_SECONDS
+			)
+		except (ControlPlaneError, ValueError):
+			status, reply = 0, None
+		data = reply.get("data") if reply else None
+		if 200 <= status < 300 and reply and reply.get("success") is True and isinstance(data, dict) and data.get("claimed") is True:
+			return None
+		code = reply.get("errorCode") if reply and status == 409 else None
+		if code == "REPLAYED_REQUEST":
+			return ValidationResult(valid=False, error="Request was already processed", error_code="REPLAYED_REQUEST")
+		if code == "SESSION_NOT_STARTABLE":
+			return ValidationResult(
+				valid=False, error="Devora is no longer starting this session", error_code="SESSION_NOT_STARTABLE"
+			)
+		if code == "TIMESTAMP_EXPIRED":
+			return ValidationResult(valid=False, error="Request is too old", error_code="TIMESTAMP_EXPIRED")
+		return ValidationResult(
+			valid=False,
+			error="Devora could not confirm this request is new",
+			error_code="REQUEST_CLAIM_UNAVAILABLE",
+		)
+
+	def _signed_devora_post(
+		self, path: str, payload: dict[str, Any], timeout: float = 5.0
+	) -> tuple[int, Optional[dict[str, Any]]]:
 		"""POST a signed JSON body to a Devora SDK endpoint (customer-to-devora)."""
 		body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 		headers = sign_request(
@@ -245,7 +257,7 @@ class DevoraBackendSDK:
 			path=path,
 			body=body,
 		)
-		status, json_body, _ = control_plane_request(f"{self.api_url}{path}", "POST", headers, body)
+		status, json_body, _ = control_plane_request(f"{self.api_url}{path}", "POST", headers, body, timeout=timeout)
 		return status, json_body
 
 	def get_session_status(self, session_id: str) -> Optional[dict[str, Any]]:
@@ -341,8 +353,6 @@ def devora_sdk(
 	collect_stats: bool = False,
 	debug: bool = False,
 	api_url: Optional[str] = None,
-	replay_store: Optional[ReplayStore] = None,
-	environment: Optional[str] = None,
 	prefetch_scope_config: bool = False,
 	**_ignored_options: Any,
 ) -> DevoraBackendSDK:
@@ -354,8 +364,6 @@ def devora_sdk(
 		collect_stats=collect_stats,
 		debug=debug,
 		api_url=api_url,
-		replay_store=replay_store,
-		environment=environment,
 		prefetch_scope_config=prefetch_scope_config,
 	)
 

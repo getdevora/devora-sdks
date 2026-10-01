@@ -21,6 +21,8 @@ export interface PresenceHeartbeatOptions {
 	sessionId: string
 	devoraSessionToken: string
 	debug?: boolean
+	/** The server refused the heartbeat (401/409): the session may have ended. */
+	onRejected?: (status: number) => void
 }
 
 const INTERACTION_EVENTS = ["mousemove", "keydown", "scroll", "click", "touchstart"] as const
@@ -95,7 +97,11 @@ export class PresenceHeartbeat {
 				body: JSON.stringify({ sessionId: this.options.sessionId }),
 				signal: AbortSignal.timeout(5_000),
 			})
-			if (!response.ok) this.logger.warn("Presence heartbeat rejected", { status: response.status })
+			if (!response.ok) {
+				this.logger.warn("Presence heartbeat rejected", { status: response.status })
+				if (response.status === 401 || response.status === 409)
+					this.options.onRejected?.(response.status)
+			}
 		} catch (error) {
 			// Best effort: a lost heartbeat is not fatal, the next interaction retries.
 			this.logger.warn("Presence heartbeat failed (network):", error)

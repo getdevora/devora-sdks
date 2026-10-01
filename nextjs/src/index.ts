@@ -321,7 +321,9 @@ export type {
 	DevoraBackendSDK,
 	ImpersonationContext,
 	ImpersonationContextResult,
+	ImpersonationTerminateRequest,
 	SessionStatusResult,
+	SessionTerminationReason,
 } from "@devorash/node"
 
 // ============================================================================

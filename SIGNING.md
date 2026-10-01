@@ -8,10 +8,10 @@ implementation: [`test/signing-v3-vectors.json`](./test/signing-v3-vectors.json)
 
 ## Directions
 
-| Direction            | Signed by              | Verified by                     | Used for                                                            |
-| -------------------- | ---------------------- | ------------------------------- | ------------------------------------------------------------------- |
-| `devora-to-customer` | Devora                 | Your backend (the SDK adapters) | User search, user lookup, impersonation start and terminate, test, health |
-| `customer-to-devora` | Your backend (the SDK) | Devora                          | Endpoint policy, session liveness, browser resume codes             |
+| Direction            | Signed by              | Verified by                     | Used for                                                                |
+| -------------------- | ---------------------- | ------------------------------- | ----------------------------------------------------------------------- |
+| `devora-to-customer` | Devora                 | Your backend (the SDK adapters) | User search, impersonation start and terminate, test, health            |
+| `customer-to-devora` | Your backend (the SDK) | Devora                          | Request claims, endpoint policy, session liveness, browser resume codes |
 
 Each verifier accepts only its own direction, so a request can never be
 replayed back at its sender.
@@ -82,39 +82,43 @@ DEVORA-HMAC-SHA256
    empty or dot segments, and no fragment.
 5. Hash the body bytes, build the canonical string with the verifier's own
    direction, and compare signatures in constant time.
-6. Consume the request id in the replay store. Only now parse the query and
-   the JSON body (strict UTF-8) and run your handler. Duplicate object keys,
-   including escaped spellings of the same key, non-finite numbers and a UTF-8
-   BOM are rejected. JavaScript objects are recursively given null prototypes.
+6. Claim the request id from Devora (`POST /api/sdk/request-claim`, see
+   [Request claims](#request-claims)). Only after a successful claim parse the
+   query and the JSON body (strict UTF-8) and run your handler. Duplicate
+   object keys, including escaped spellings of the same key, non-finite numbers
+   and a UTF-8 BOM are rejected. JavaScript objects are recursively given null
+   prototypes.
 
 Encoded dot segments are rejected too. Query percent escapes must decode as
 valid UTF-8; lone surrogates cannot be supplied to the signer. Header grammar
 matches must consume the entire value, including any terminal newline.
 
-Steps 1-5 never touch the replay store, so unauthenticated traffic cannot use
-up request ids. Unsigned or invalid requests are rejected before route lookup.
+Steps 1-5 never contact Devora, so unauthenticated traffic cannot use up
+request ids. Unsigned or invalid requests are rejected before route lookup.
 
-## Replay store
+## Request claims
 
-`consume(namespace, requestId, expiresAt)` must be an atomic insert-if-absent
-shared by every instance of your backend, and must keep each entry until
-`expiresAt` (Unix milliseconds). The namespace is
-`v3:<direction>:<key id>`, and `expiresAt` is
-`(max(now, sent-at) + tolerance + 2) * 1000`. For example, with a connected
-[node-redis](https://www.npmjs.com/package/redis) client:
+Each request id is single use, and Devora is the one place that records it: your
+backend stores nothing. After step 5 the SDK sends one signed
+`customer-to-devora` request, `POST /api/sdk/request-claim`, with the JSON body
+`{ "requestId": "<request id>", "sentAt": "<sent-at>" }`. For the impersonation
+start request (`POST /impersonate/:id`) the SDK reads `sessionId` from the
+already verified body and adds it, so the start can be claimed only while
+Devora is still starting that session. The first claim of a request id wins.
+The claim has a 3-second deadline (`REQUEST_CLAIM.TIMEOUT_MS` in
+`@devorash/core`, `REQUEST_CLAIM_TIMEOUT_SECONDS` in `devora-python`).
 
-```ts
-const replayStore = {
-	async consume(namespace: string, requestId: string, expiresAt: number) {
-		const key = `devora:replay:${namespace}:${requestId}`
-		const reply = await redis.sendCommand<string | null>(["SET", key, "1", "NX", "PXAT", String(expiresAt)])
-		return reply === "OK"
-	},
-}
-```
+| Devora's answer                       | SDK result                                | Status |
+| ------------------------------------- | ----------------------------------------- | ------ |
+| Claimed                               | Run the handler                           | -      |
+| Request id already claimed            | `REPLAYED_REQUEST`                        | 401    |
+| Session no longer starting            | `SESSION_NOT_STARTABLE`                   | 409    |
+| Request too old to claim              | `TIMESTAMP_EXPIRED`                       | 401    |
+| Unreachable, timeout or anything else | `REQUEST_CLAIM_UNAVAILABLE` (fail closed) | 503    |
 
-A store that cannot answer must throw; the SDK then fails closed with a 503.
-Never implement it as a read followed by a separate write.
+Your backend therefore needs outbound HTTPS access to the Devora API. Every
+signed Devora request is claimed, including `/test` and `/health`, so Devora's
+**Test connection** check also proves that access.
 
 ## Framework notes
 

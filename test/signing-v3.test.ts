@@ -24,6 +24,7 @@ import {
 	strictEncode as refEncode,
 	vectors,
 } from "./support/signing"
+import { installFakeDevora, type FakeDevora } from "./support/devora-claims"
 
 const require = createRequire(import.meta.url)
 const load = (name: string, from: string) =>
@@ -38,18 +39,10 @@ afterEach(() => {
 /** Vectors carry a fixed sent-at; accept it for vector checks only. */
 const VECTOR_TOLERANCE = 100_000_000
 
+let devora: FakeDevora
 function freshSdk(): DevoraBackendSDK {
-	globalThis.fetch = async () =>
-		Response.json({
-			success: true,
-			data: {
-				version: 1,
-				safeReadEndpoints: [],
-				blockedEndpoints: [],
-				cachedUntil: Date.now() + 60_000,
-			},
-		})
-	return devoraSDK({ ...TEST_KEYS, environment: "test" })
+	devora = installFakeDevora()
+	return devoraSDK({ ...TEST_KEYS })
 }
 
 type Vector = (typeof vectors.positive)[number]
@@ -237,27 +230,86 @@ test("replays, timestamp edges and zero tolerance (N13, N14, N19)", async () => 
 	sdk.destroy()
 })
 
-test("replay store failures fail closed", async () => {
-	globalThis.fetch = async () =>
-		Response.json({
-			success: true,
-			data: {
-				version: 1,
-				safeReadEndpoints: [],
-				blockedEndpoints: [],
-				cachedUntil: Date.now() + 60_000,
-			},
-		})
-	const sdk = devoraSDK({
-		...TEST_KEYS,
-		replayStore: {
-			consume: async () => {
-				throw new Error("store down")
-			},
+test("each verified request is claimed once from Devora, signed as the customer", async () => {
+	const sdk = freshSdk()
+	const request = signedAdapterRequest({ method: "GET", path: "/test" })
+	expect((await sdk.verifyRequest(request)).valid).toBe(true)
+	expect(devora.calls).toEqual([
+		{
+			requestId: request.headers["x-devora-request-id"],
+			sentAt: request.headers["x-devora-sent-at"],
 		},
+	] as never)
+	// A second SDK instance (another server) sees the same Devora record.
+	const other = devoraSDK({ ...TEST_KEYS })
+	expect((await other.verifyRequest(request)).errorCode).toBe("REPLAYED_REQUEST")
+	other.destroy()
+	sdk.destroy()
+})
+
+test("requests that fail verification are never claimed", async () => {
+	const sdk = freshSdk()
+	const request = signedAdapterRequest({ method: "GET", path: "/test" })
+	const tampered = {
+		...request,
+		headers: { ...request.headers, "x-devora-signature": "0".repeat(64) },
+	}
+	expect((await sdk.verifyRequest(tampered)).errorCode).toBe("INVALID_SIGNATURE")
+	const stale = signedAdapterRequest({
+		method: "GET",
+		path: "/test",
+		sentAt: String(Math.floor(Date.now() / 1000) - 400),
 	})
-	const result = await sdk.verifyRequest(signedAdapterRequest({ method: "GET", path: "/test" }))
-	expect(result.errorCode).toBe("REPLAY_STORE_UNAVAILABLE")
+	expect((await sdk.verifyRequest(stale)).errorCode).toBe("TIMESTAMP_EXPIRED")
+	expect(devora.calls).toHaveLength(0)
+	sdk.destroy()
+})
+
+test("a start request claims its session; other requests claim no session", async () => {
+	const sdk = freshSdk()
+	const start = signedAdapterRequest({
+		method: "POST",
+		path: "/impersonate/u1",
+		body: { sessionId: "session_1", scope: "read" },
+	})
+	expect((await sdk.verifyRequest(start)).valid).toBe(true)
+	expect(devora.calls.at(-1)?.sessionId).toBe("session_1")
+	const terminate = signedAdapterRequest({
+		method: "DELETE",
+		path: "/impersonate/session_1/terminate",
+		body: { reason: "user_ended", sessionId: "not-a-start" },
+	})
+	expect((await sdk.verifyRequest(terminate)).valid).toBe(true)
+	expect(devora.calls.at(-1)?.sessionId).toBeUndefined()
+	// Devora no longer starting the session (e.g. it gave up): the start is refused.
+	devora.notStartable.add("session_2")
+	const late = signedAdapterRequest({
+		method: "POST",
+		path: "/impersonate/u1",
+		body: { sessionId: "session_2", scope: "read" },
+	})
+	expect((await sdk.verifyRequest(late)).errorCode).toBe("SESSION_NOT_STARTABLE")
+	sdk.destroy()
+})
+
+test("any unclear claim answer fails closed", async () => {
+	const sdk = freshSdk()
+	const cases = {
+		unavailable: "REQUEST_CLAIM_UNAVAILABLE",
+		"network-error": "REQUEST_CLAIM_UNAVAILABLE",
+		malformed: "REQUEST_CLAIM_UNAVAILABLE",
+		replayed: "REPLAYED_REQUEST",
+		"timestamp-expired": "TIMESTAMP_EXPIRED",
+	} as const
+	for (const [reply, errorCode] of Object.entries(cases)) {
+		devora.reply = reply as FakeDevora["reply"]
+		const result = await sdk.verifyRequest(signedAdapterRequest({ method: "GET", path: "/test" }))
+		expect({ reply, valid: result.valid, errorCode: result.errorCode }).toEqual({
+			reply,
+			valid: false,
+			errorCode,
+		})
+	}
 	sdk.destroy()
 })
 

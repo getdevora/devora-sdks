@@ -53,6 +53,8 @@ export interface ActivityLoggerOptions {
 	captureCustomEvents: boolean
 	debug?: boolean
 	onIncomplete?: (reason: string) => void
+	/** Devora stored a batch after the session ended: end the session locally now. */
+	onSessionEnded?: () => void
 }
 
 const MAX_DESCRIPTION_LENGTH = 300
@@ -387,6 +389,13 @@ export class ActivityLogger {
 					const acknowledgment = JSON.parse(await readBoundedBody(response, 4096))
 					if (acknowledgment?.success !== true)
 						throw new Error("Activity upload was not acknowledged")
+					if (acknowledgment.sessionEnded === true) {
+						try {
+							this.options.onSessionEnded?.()
+						} catch {
+							/* An observer cannot affect delivery. */
+						}
+					}
 				},
 				10_000,
 				() => controller.abort()

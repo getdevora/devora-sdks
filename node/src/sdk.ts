@@ -19,8 +19,9 @@ import {
 	isValidSignedPath,
 	isValidSignedQuery,
 	parseSignatureHeaders,
-	replayExpiresAtMs,
-	replayNamespace,
+	parseVerifiedJsonBody,
+	getSingleHeader,
+	REQUEST_CLAIM,
 	assertTimestampTolerance,
 	isValidTimestampTolerance,
 	createSDKInfo,
@@ -45,9 +46,7 @@ import type {
 	SessionStatusResult,
 	SignedRequestInput,
 	ValidationResult,
-	DevoraEnvironment,
 } from "./types.js"
-import { InMemoryReplayStore } from "./replay-store.js"
 
 /**
  * Validate secret key format
@@ -90,20 +89,16 @@ function resolveApiUrl(override: string | undefined): string {
 	return parsed.origin
 }
 
+/** A start request: `POST …/impersonate/:id` under any mount path. */
+const START_REQUEST_PATH = /\/impersonate\/[^/]+$/
+
 /**
  * Create a Devora Backend SDK instance
  *
  * Security: The SDK authenticates requests using HMAC-SHA256 signatures.
  * The secret key is unique per organization, so valid HMAC = authenticated request.
+ * Each verified request is then claimed once from Devora, so it cannot be replayed.
  */
-/** Explicit option first, then DEVORA_ENV / NODE_ENV as hints, else production. */
-export function resolveEnvironment(explicit?: DevoraEnvironment): DevoraEnvironment {
-	const raw = (explicit ?? process.env.DEVORA_ENV ?? process.env.NODE_ENV ?? "production")
-		.toString()
-		.toLowerCase()
-	return raw === "development" || raw === "test" ? raw : "production"
-}
-
 export function devoraSDK(config: NodeBackendSDKConfig): DevoraBackendSDK {
 	// Runtime allowlist: unknown capture/preferences are ignored in JavaScript too.
 	config = {
@@ -116,8 +111,6 @@ export function devoraSDK(config: NodeBackendSDKConfig): DevoraBackendSDK {
 		logRequests: config.logRequests,
 		logger: config.logger,
 		collectStats: config.collectStats,
-		replayStore: config.replayStore,
-		environment: config.environment,
 	}
 	// Validate configuration
 	if (!config.secretKey) {
@@ -131,14 +124,6 @@ export function devoraSDK(config: NodeBackendSDKConfig): DevoraBackendSDK {
 	}
 	assertTimestampTolerance(config.timestampTolerance)
 	const apiUrl = resolveApiUrl(config.apiUrl)
-	// Fail closed: anything that is not explicitly a development/test runtime is
-	// production, and production must share replay protection across instances.
-	const environment = resolveEnvironment(config.environment)
-	if (environment === "production" && !config.replayStore)
-		throw new Error(
-			'Devora SDK: replayStore is required in production. Pass a persistent ReplayStore, or set environment: "development" (InMemoryReplayStore) for local development only.'
-		)
-	const replayStore = config.replayStore ?? new InMemoryReplayStore()
 
 	// Validate secret key format (security check)
 	const secretKeyValidation = validateSecretKeyFormat(config.secretKey)
@@ -326,9 +311,9 @@ export function devoraSDK(config: NodeBackendSDKConfig): DevoraBackendSDK {
 	}
 
 	/**
-	 * Verify a signed request from Devora (signature v3) over its exact bytes.
-	 * Steps before the replay store never touch it, so unauthenticated traffic
-	 * cannot burn request ids.
+	 * Verify a signed request from Devora (signature v3) over its exact bytes,
+	 * then claim its request id from Devora. Only a request whose signature
+	 * verified is ever claimed, so unauthenticated traffic cannot burn request ids.
 	 */
 	async function verifyRequest(
 		request: SignedRequestInput,
@@ -381,28 +366,21 @@ export function devoraSDK(config: NodeBackendSDKConfig): DevoraBackendSDK {
 		if (!signatureMatches(config.secretKey, canonical, headers.signature))
 			return { valid: false, error: "Invalid HMAC signature", errorCode: "INVALID_SIGNATURE" }
 
-		let fresh: boolean
-		try {
-			fresh = await replayStore.consume(
-				replayNamespace(SIGNING.DEVORA_TO_CUSTOMER, headers.keyId),
-				headers.requestId,
-				replayExpiresAtMs(sentAt, Math.floor(Date.now() / 1000), tolerance)
+		// A start request names the session it starts; Devora lets it be claimed
+		// only while that session is still starting. (A start request without a
+		// valid session ID is claimed plainly; the handler then refuses it.)
+		let sessionId: string | undefined
+		if (request.method === "POST" && START_REQUEST_PATH.test(request.path)) {
+			const parsed = parseVerifiedJsonBody(
+				request.body,
+				getSingleHeader(request.headers, "content-type")
 			)
-		} catch {
-			return {
-				valid: false,
-				error: "Replay protection is unavailable",
-				errorCode: "REPLAY_STORE_UNAVAILABLE",
-			}
+			const value = parsed.ok ? (parsed.value as { sessionId?: unknown } | undefined) : undefined
+			if (typeof value?.sessionId === "string" && value.sessionId && value.sessionId.length <= 128)
+				sessionId = value.sessionId
 		}
-		if (typeof fresh !== "boolean")
-			return {
-				valid: false,
-				error: "Replay store must return a boolean decision",
-				errorCode: "REPLAY_STORE_UNAVAILABLE",
-			}
-		if (!fresh)
-			return { valid: false, error: "Request was already processed", errorCode: "REPLAYED_REQUEST" }
+		const claim = await claimRequest(headers.requestId, headers.sentAt, sessionId)
+		if (claim) return claim
 
 		return {
 			valid: true,
@@ -413,25 +391,80 @@ export function devoraSDK(config: NodeBackendSDKConfig): DevoraBackendSDK {
 		}
 	}
 
+	/**
+	 * Claim a verified request id from Devora. Returns null when this is the
+	 * first claim, otherwise the rejection. Anything but a clear answer fails
+	 * closed: the handler never runs without a successful claim.
+	 */
+	async function claimRequest(
+		requestId: string,
+		sentAt: string,
+		sessionId: string | undefined
+	): Promise<ValidationResult | null> {
+		let result: { status: number; ok: boolean; json: Record<string, unknown> | null }
+		try {
+			result = await signedDevoraPost(
+				REQUEST_CLAIM.ENDPOINT,
+				sessionId === undefined ? { requestId, sentAt } : { requestId, sentAt, sessionId },
+				REQUEST_CLAIM.TIMEOUT_MS
+			)
+		} catch {
+			result = { status: 0, ok: false, json: null }
+		}
+		const { status, ok, json } = result
+		if (ok && json?.success === true) {
+			const data = json.data as { claimed?: unknown } | undefined
+			if (data?.claimed === true) return null
+		}
+		if (status === 409) {
+			const code = json?.errorCode
+			if (code === "REPLAYED_REQUEST")
+				return {
+					valid: false,
+					error: "Request was already processed",
+					errorCode: "REPLAYED_REQUEST",
+				}
+			if (code === "SESSION_NOT_STARTABLE")
+				return {
+					valid: false,
+					error: "Devora is no longer starting this session",
+					errorCode: "SESSION_NOT_STARTABLE",
+				}
+			if (code === "TIMESTAMP_EXPIRED")
+				return { valid: false, error: "Request is too old", errorCode: "TIMESTAMP_EXPIRED" }
+		}
+		logger.warn("Devora request claim unavailable", { status })
+		return {
+			valid: false,
+			error: "Devora could not confirm this request is new",
+			errorCode: "REQUEST_CLAIM_UNAVAILABLE",
+		}
+	}
+
 	/** POST a signed JSON body to a Devora SDK endpoint and read a bounded JSON object reply. */
 	async function signedDevoraPost(
 		path: string,
-		payload: Record<string, unknown>
+		payload: Record<string, unknown>,
+		timeoutMs?: number
 	): Promise<{ status: number; ok: boolean; json: Record<string, unknown> | null }> {
 		const body = new TextEncoder().encode(JSON.stringify(payload))
-		const response = await controlPlaneFetch(`${apiUrl}${path}`, {
-			method: "POST",
-			headers: signRequest({
-				secretKey: config.secretKey,
-				direction: SIGNING.CUSTOMER_TO_DEVORA,
-				keyId: config.apiKey,
-				orgId: config.orgId,
+		const response = await controlPlaneFetch(
+			`${apiUrl}${path}`,
+			{
 				method: "POST",
-				path,
+				headers: signRequest({
+					secretKey: config.secretKey,
+					direction: SIGNING.CUSTOMER_TO_DEVORA,
+					keyId: config.apiKey,
+					orgId: config.orgId,
+					method: "POST",
+					path,
+					body,
+				}),
 				body,
-			}),
-			body,
-		})
+			},
+			timeoutMs
+		)
 		const json = await readBoundedJsonObject(response).catch(() => null)
 		return { status: response.status, ok: response.ok, json }
 	}

@@ -157,6 +157,12 @@ export interface SessionRecorderConfig {
 	 * but still opaque capture. Recording continues; the replay may look plainer.
 	 */
 	onPrivacyDegraded?: (reasons: readonly string[]) => void
+	/**
+	 * Devora stored an upload after the session had already ended (late-data
+	 * grace window). The tab should end the session locally now so its final
+	 * capture still arrives inside that window.
+	 */
+	onSessionEnded?: () => void
 	/** Pause callback (when recording pauses due to visibility/focus) */
 	onPause?: (reason: "tab_hidden" | "browser_unfocused") => void
 	/** Resume callback (when recording resumes) */
@@ -1508,7 +1514,12 @@ export class SessionRecorder {
 				recordingEventsBytes(chunk.events) <= MAX_SYNC_FINAL_RECORDING_BYTES
 			)
 				chunk.precomputed = compressFinalRecordingEventsSync(chunk.events)
-			else chunk.precomputed ??= await compressRecordingEvents(chunk.events)
+			else if (!chunk.precomputed) {
+				const compressed = await compressRecordingEvents(chunk.events)
+				// An unload may have pinned and sent this index's bytes meanwhile.
+				// Every copy of one index must be byte-identical for the server.
+				chunk.precomputed ??= compressed
+			}
 			await this.sendChunk(
 				chunk.events,
 				chunk.isFinal,
@@ -1529,7 +1540,8 @@ export class SessionRecorder {
 		const fc = this.failedChunk
 		try {
 			await this.uploadFormedChunk(fc)
-			this.failedChunk = null
+			// An unload during this retry may have retained a newer tail.
+			if (this.failedChunk === fc) this.failedChunk = null
 			return true
 		} catch (error) {
 			if (error instanceof RecordingDeniedError) {
@@ -1696,14 +1708,48 @@ export class SessionRecorder {
 	 */
 	private flushSync(isFinal = false): void {
 		if (this.uploadDenied) return
-		// An earlier chunk must be acknowledged before a final index can claim
-		// completeness. Never race the ordinary upload or another keepalive.
-		if (this.isFlushing || this.keepaliveUpload) {
+		// A queued keepalive is still unacknowledged; a second unload pass cannot
+		// prove more than the first one already queued.
+		if (this.keepaliveUpload) {
 			if (isFinal) this.markUnloadIncomplete()
 			return
 		}
-		const chunk = this.failedChunk ?? this.formChunk(isFinal, true)
+		const uploads: Promise<void>[] = []
+		const inFlight = this.isFlushing ? this.uploadingChunk : null
+		if (this.isFlushing) {
+			// A persisted (bfcache) pagehide may resume: let the ordinary upload finish.
+			if (!isFinal) return
+			// The page is unloading under an ordinary upload that navigation may
+			// cancel: a server-rendered app navigating right after onImpersonate
+			// (the first snapshot is still uploading), or any page exit during a
+			// periodic flush. Requeue that exact chunk with keepalive: same index
+			// and bytes, which the server accepts as an identical duplicate. It
+			// completes a page only once every index up to the final one arrived,
+			// in any order, so the tail below may follow without waiting.
+			const resent = inFlight ? this.postChunkKeepalive(inFlight) : null
+			if (!resent) {
+				this.markUnloadIncomplete()
+				return
+			}
+			uploads.push(resent)
+		}
+		// During a retry the in-flight chunk is the failed one; it was requeued above.
+		const retained = this.failedChunk !== inFlight ? this.failedChunk : null
+		if (retained && isFinal) {
+			// Navigation usually cancels the ordinary upload just before pagehide,
+			// so it arrives here as failed rather than in flight. Requeue it like an
+			// in-flight chunk, then the tail below; sending it alone loses the tail.
+			const resent = this.postChunkKeepalive(retained)
+			if (!resent) {
+				this.trackKeepalive(uploads)
+				this.markUnloadIncomplete()
+				return
+			}
+			uploads.push(resent)
+		}
+		const chunk = (isFinal ? null : retained) ?? this.formChunk(isFinal, true)
 		if (!chunk) {
+			this.trackKeepalive(uploads)
 			if (isFinal && this.events.length > 0) this.markUnloadIncomplete()
 			return
 		}
@@ -1711,8 +1757,20 @@ export class SessionRecorder {
 		// the browser refuses the request or the shared budget has no room.
 		this.failedChunk = chunk
 		const queued = this.postChunkKeepalive(chunk)
+		if (queued) uploads.push(queued)
+		this.trackKeepalive(uploads)
 		if (isFinal && (!queued || this.events.length > 0 || !chunk.isFinal))
 			this.markUnloadIncomplete()
+	}
+
+	/** Later flushes wait for every unload-time upload before reusing an index. */
+	private trackKeepalive(uploads: Promise<void>[]): void {
+		if (uploads.length === 0) return
+		const upload = uploads.length === 1 ? uploads[0]! : Promise.all(uploads).then(() => {})
+		this.keepaliveUpload = upload
+		void upload.finally(() => {
+			if (this.keepaliveUpload === upload) this.keepaliveUpload = null
+		})
 	}
 
 	private markUnloadIncomplete(): void {
@@ -1727,15 +1785,19 @@ export class SessionRecorder {
 		this.reportCaptureIncomplete("unload_delivery_uncertain")
 	}
 
-	/** Queue one upload within the shared budget; true does not mean delivered. */
-	private postChunkKeepalive(chunk: FormedChunk): boolean {
-		if (!chunk.precomputed && recordingEventsBytes(chunk.events) > MAX_SYNC_RECORDING_BYTES)
-			return false
-		if (
-			chunk.precomputed &&
-			chunk.precomputed.compressed.byteLength > (availableKeepaliveBytes("recording") * 3) / 4
-		)
-			return false
+	/** Queue one upload within the shared budget; a promise does not mean delivered. */
+	private postChunkKeepalive(chunk: FormedChunk): Promise<void> | null {
+		if (!chunk.precomputed) {
+			if (recordingEventsBytes(chunk.events) > MAX_SYNC_RECORDING_BYTES) return null
+			// Pin the bytes on the chunk: any later copy of this index must match them.
+			try {
+				chunk.precomputed = compressRecordingEventsSync(chunk.events)
+			} catch {
+				return null
+			}
+		}
+		if (chunk.precomputed.compressed.byteLength > (availableKeepaliveBytes("recording") * 3) / 4)
+			return null
 		const payload = JSON.stringify(
 			this.buildChunkPayload(
 				chunk.events,
@@ -1746,7 +1808,7 @@ export class SessionRecorder {
 				chunk.precomputed
 			)
 		)
-		if (strToU8(payload).byteLength > MAX_KEEPALIVE_BODY_BYTES) return false
+		if (strToU8(payload).byteLength > MAX_KEEPALIVE_BODY_BYTES) return null
 		const controller = new AbortController()
 		const pending = tryKeepaliveFetch(
 			`${this.config.apiUrl}/api/sdk/recording/chunk`,
@@ -1764,8 +1826,8 @@ export class SessionRecorder {
 			},
 			"recording"
 		)
-		if (!pending) return false
-		const upload = withDeadline(
+		if (!pending) return null
+		return withDeadline(
 			() => pending,
 			10_000,
 			() => controller.abort()
@@ -1778,11 +1840,6 @@ export class SessionRecorder {
 				this.logger.warn("Keepalive recording upload was not acknowledged", error)
 				this.markUnloadIncomplete()
 			})
-			.finally(() => {
-				if (this.keepaliveUpload === upload) this.keepaliveUpload = null
-			})
-		this.keepaliveUpload = upload
-		return true
 	}
 
 	/**
@@ -1875,6 +1932,13 @@ export class SessionRecorder {
 
 			const result = await response.json()
 			this.logger.log("sendChunk() - upload successful", result)
+			if (result?.sessionEnded === true) {
+				try {
+					this.config.onSessionEnded?.()
+				} catch {
+					/* An observer cannot affect delivery. */
+				}
+			}
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : String(error)
 			this.logger.error("sendChunk() - upload error", {

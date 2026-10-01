@@ -16,8 +16,6 @@ export const SDK_END_REASON = {
 	EXPIRED: "expired",
 	/** Session was terminated externally (detected via validation check) */
 	TERMINATED_EXTERNALLY: "terminated_externally",
-	/** Page is being unloaded (beforeunload event) */
-	PAGE_UNLOAD: "page_unload",
 } as const
 
 export type SDKEndReason = (typeof SDK_END_REASON)[keyof typeof SDK_END_REASON]

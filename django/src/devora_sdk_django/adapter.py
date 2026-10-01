@@ -59,6 +59,39 @@ class DjangoImpersonationGuardOptions:
 	on_liveness_unavailable: str = "deny"
 	is_impersonation_allowed: Optional[Callable[[Any, ImpersonationContext], bool]] = None
 	bridge_path: Optional[str] = None
+	render_blocked: Optional[Callable[[Any, int, Mapping[str, Any]], Any]] = None
+
+
+def _wants_html(request: Any) -> bool:
+	"""A browser page load or form post, as opposed to a fetch/XHR/API call."""
+	headers = request.headers
+	if headers.get("X-Requested-With") == "XMLHttpRequest":
+		return False
+	if "application/json" in (headers.get("Content-Type") or ""):
+		return False
+	accept = headers.get("Accept") or ""
+	return "text/html" in accept and "application/json" not in accept
+
+
+def _blocked_html_response(request: Any, status_code: int, body: Mapping[str, Any]) -> Any:
+	"""Default page for a blocked page load or form post: plain, escaped, never cached."""
+	from django.http import HttpResponse
+	from django.utils.html import escape
+
+	message = escape(str(body.get("error") or "This action is not allowed during impersonation"))
+	html = (
+		'<!doctype html><html lang="en"><head><meta charset="utf-8">'
+		'<meta name="viewport" content="width=device-width, initial-scale=1">'
+		"<title>Action not allowed</title></head>"
+		'<body style="font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem">'
+		"<h1 style=\"font-size:1.25rem\">This action is not allowed in this session</h1>"
+		f"<p>{message}.</p>"
+		'<p><a href="javascript:history.back()">Go back</a></p>'
+		"</body></html>"
+	)
+	response = HttpResponse(html, status=status_code, content_type="text/html; charset=utf-8")
+	response["Cache-Control"] = "private, no-store"
+	return response
 
 
 def django_urlpatterns(sdk: Any, options: Optional[DjangoAdapterOptions] = None) -> list[Any]:
@@ -234,6 +267,7 @@ def create_impersonation_guard(
 	on_liveness_unavailable: str = "deny",
 	is_impersonation_allowed: Optional[Callable[[Any, ImpersonationContext], bool]] = None,
 	bridge_path: Optional[str] = None,
+	render_blocked: Optional[Callable[[Any, int, Mapping[str, Any]], Any]] = None,
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
 	"""Django middleware factory (also usable as a view decorator).
 
@@ -245,6 +279,11 @@ def create_impersonation_guard(
 	including ``SCRIPT_NAME``). Deny rules also match ``path_info`` and the path
 	with an ``i18n_patterns`` language prefix removed. ``bridge_path`` enables the
 	read-scope allowance for a mounted browser-session bridge (off by default).
+
+	Blocked API calls (fetch/XHR, JSON) get a JSON error. Blocked page loads and
+	form posts get a small HTML page instead, or whatever
+	``render_blocked(request, status_code, body)`` returns, so a server-rendered
+	app can show its own template.
 	"""
 	options = DjangoImpersonationGuardOptions(
 		sdk=sdk,
@@ -257,6 +296,7 @@ def create_impersonation_guard(
 		on_liveness_unavailable=on_liveness_unavailable,
 		is_impersonation_allowed=is_impersonation_allowed,
 		bridge_path=bridge_path,
+		render_blocked=render_blocked,
 	)
 	liveness = (
 		SessionLivenessChecker(sdk, liveness_cache_ttl_ms, on_liveness_unavailable)
@@ -324,6 +364,9 @@ def create_impersonation_guard(
 			)
 
 		status_code, body = _guard_response(decision.status_code, decision.body, options.blocked_response)
+		if _wants_html(request):
+			render = options.render_blocked or _blocked_html_response
+			return render(request, status_code, body)
 		return _private_json_response(body, status=status_code)
 
 	def guard_failed() -> Any:

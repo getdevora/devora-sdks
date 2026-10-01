@@ -31,7 +31,7 @@ def test_python_liveness_request_is_signed_customer_to_devora_v3():
     from unittest.mock import patch
     from devora_sdk import devora_sdk
     from signing_support import API_KEY, ORG_ID, SECRET_KEY, sign
-    sdk = devora_sdk(API_KEY, SECRET_KEY, ORG_ID, environment="development", prefetch_scope_config=False)
+    sdk = devora_sdk(API_KEY, SECRET_KEY, ORG_ID, prefetch_scope_config=False)
     captured = []
     class Response:
         status = 200

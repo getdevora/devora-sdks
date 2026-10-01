@@ -1,6 +1,6 @@
 {
 	"name": "@devorash/express",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "Devora Express.js adapter for backend SDK",
 	"keywords": [
 		"backend",

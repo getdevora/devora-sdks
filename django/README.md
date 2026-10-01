@@ -12,13 +12,12 @@ Django adapter for the Devora Python backend SDK.
 
 - Python `>=3.10,<4.0`
 - Django `>=5.2.17,<7.0`, excluding `6.0.0` through `6.0.7` (on Django 6.0, use `6.0.8` or newer)
-- In production, a replay store shared by every worker (the example below uses
-  Redis 6.2 or newer, for `SET ... PXAT`)
+- Outbound HTTPS access from your backend to the Devora API
 
 ## Install
 
 ```bash
-pip install devora-python devora-django redis
+pip install devora-python devora-django
 ```
 
 ## Quick Start
@@ -27,32 +26,46 @@ pip install devora-python devora-django redis
 # devora_integration.py
 import os
 
-import redis
 from devora_sdk import DEVORA_ENDPOINTS, devora_sdk
-
-# Replay protection shared by every worker and instance (required in production).
-redis_client = redis.Redis.from_url(os.environ["REDIS_URL"])
-
-
-class RedisReplayStore:
-    def consume(self, namespace: str, request_id: str, expires_at: int) -> bool:
-        # Atomic insert-if-absent kept until expires_at; an exception makes the SDK fail closed (503).
-        key = f"devora:replay:{namespace}:{request_id}"
-        return bool(redis_client.set(key, b"1", nx=True, pxat=expires_at))
-
 
 sdk = devora_sdk(
     api_key=os.environ["DEVORA_API_KEY"],  # pk_server_live_...
     secret_key=os.environ["DEVORA_SECRET_KEY"],  # sk_server_live_...
     org_id=os.environ["DEVORA_ORG_ID"],
-    replay_store=RedisReplayStore(),
 )
 
 
 @sdk.register(DEVORA_ENDPOINTS.USER_SEARCH)
 def search_users(req):
-    return {"users": search_customer_users(req.query.get("term", ""))}
+    # Match name, email and the exact user ID with a parameterised query.
+    term = req.query.get("term", "")
+    limit = int(req.query.get("limit", 10))
+    users = search_customer_users(term, limit)
+    return {
+        "users": [
+            {
+                "id": u.id,
+                "name": u.name,
+                "email": u.email,
+                "attributes": {"company": u.company, "role": u.role, "plan": u.plan},
+            }
+            for u in users
+        ]
+    }
+
+
+@sdk.register(DEVORA_ENDPOINTS.TERMINATE)
+def terminate(req):
+    session_id = req.params["id"]
+    reason = (req.body or {}).get("reason")
+    # YOU IMPLEMENT: mark this Devora session revoked so every credential issued for it
+    # is rejected, including one issued after this call. Must be idempotent: Devora
+    # retries with a new request id (up to 5 attempts over 6 hours).
+    auth.revoke_impersonation_session(session_id=session_id, reason=reason)
+    return {"success": True}
 ```
+
+User search should match name, email and the exact user ID. `attributes` are optional display fields such as company, role or plan: up to 12 per user, lowercase keys like `last_login`, and string, number, boolean or `null` values. Devora drops invalid entries silently; see [Search results and templates](https://docs.devora.sh/guide/search-results) for the limits and how your team lays out results.
 
 ```python
 # urls.py
@@ -71,17 +84,16 @@ later are not mounted. If any handler is an `async def` function, use
 thread too); `django_urlpatterns` answers an async handler with
 `400 HANDLER_ERROR`.
 
-The environment comes from `environment=`, else `DEVORA_ENV`, else `NODE_ENV`.
-Anything other than `development` or `test` (including unset) is production,
-and production refuses to start without a `replay_store`. Any store whose
-`consume` is an atomic insert-if-absent shared by every worker works; see the
-[replay-store contract](https://github.com/getdevora/devora-sdks/blob/main/SIGNING.md#replay-store).
-`consume` must be a regular (not `async def`) method.
+Each verified request is claimed once from Devora before your handler runs, so
+replay protection needs no storage on your side; your backend only needs
+outbound HTTPS access to the Devora API. See
+[SIGNING.md](https://github.com/getdevora/devora-sdks/blob/main/SIGNING.md#request-claims).
 
-**Local development only:** to run without Redis, omit `replay_store` and set
-`DEVORA_ENV=development` (or pass `environment="development"`). The SDK then
-keeps request ids in memory, which protects a single process only. Never use
-this in production.
+The terminate body is `{"reason": ..., "terminatedBy": ...}`; Devora retries a
+failed call (up to 5 attempts over 6 hours) with a new request id, so keep the
+handler idempotent. Return a 2xx, or 429/503 with `Retry-After` when overloaded; any
+other 4xx stops the retries. See
+[Session lifecycle & cleanup](https://docs.devora.sh/guide/session-lifecycle).
 
 For protected application routes, install the guard middleware and return the
 context dict your `IMPERSONATE` handler stored, read back from your
@@ -108,6 +120,27 @@ DevoraGuardMiddleware = create_impersonation_guard(
 Add `"yourapp.devora_guard.DevoraGuardMiddleware"` to `settings.MIDDLEWARE`,
 after your own authentication middleware, so `request.user` is set when the
 guard runs.
+
+Blocked API calls get a JSON error. Blocked page loads and form posts (an
+`Accept` header with `text/html` and without `application/json`, no JSON body,
+not an XHR) get a small, uncached HTML page with the reason and a back link. To show your own template, pass `render_blocked`, a
+synchronous function that receives the request, the status code and the error
+body and returns a response:
+
+```python
+from django.shortcuts import render
+
+
+def render_blocked(request, status_code, body):
+    return render(request, "impersonation_blocked.html", {"error": body.get("error")}, status=status_code)
+
+
+DevoraGuardMiddleware = create_impersonation_guard(
+    sdk=sdk,
+    get_impersonation_context=get_impersonation_context,
+    render_blocked=render_blocked,
+)
+```
 
 `expires_at` must be a Unix timestamp in milliseconds. If your JWT stores Unix
 seconds, multiply by `1000` when building the impersonation context. `actor`,

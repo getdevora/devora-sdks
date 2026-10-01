@@ -7,7 +7,7 @@ Supports Next.js 14, 15 and 16 with React 18 or 19. Import server APIs from `@de
 Recording, masking, capture and scope policy are configured by a Devora administrator in the dashboard and authorized by Devora for each session; they are not SDK options. See [Capture settings](https://github.com/getdevora/devora-sdks/blob/main/SETTINGS.md).
 
 ```bash
-npm install @devorash/nextjs redis
+npm install @devorash/nextjs
 ```
 
 > **Runtime:** the Devora route handlers verify requests with HMAC (`node:crypto`), so they must run on the **Node.js runtime** — add `export const runtime = "nodejs"` to the route file. Edge runtime is not supported.
@@ -18,33 +18,18 @@ Create your SDK instance once and register your handlers:
 
 ```ts
 // lib/devora.ts
-import { createClient } from "redis"
-import { devoraSDK, DEVORA_ENDPOINTS } from "@devorash/nextjs"
-
-// Replay protection shared by every instance of your app (required in production).
-const redis = createClient({ url: process.env.REDIS_URL }).on("error", (err) => console.error("Redis error", err))
-let redisReady: Promise<unknown> | undefined // one connection, shared by concurrent first requests
+import { devoraSDK, DEVORA_ENDPOINTS, type ImpersonationTerminateRequest } from "@devorash/nextjs"
 
 export const devora = devoraSDK({
 	apiKey: process.env.DEVORA_API_KEY!, // pk_server_live_...
 	secretKey: process.env.DEVORA_SECRET_KEY!, // sk_server_live_...
 	orgId: process.env.DEVORA_ORG_ID!,
-	replayStore: {
-		async consume(namespace, requestId, expiresAt) {
-			await (redisReady ??= redis.connect().catch((err) => {
-				redisReady = undefined // retry on the next request
-				throw err
-			}))
-			const key = `devora:replay:${namespace}:${requestId}`
-			// Atomic insert-if-absent kept until expiresAt; an error makes the SDK fail closed (503).
-			const reply = await redis.sendCommand<string | null>(["SET", key, "1", "NX", "PXAT", String(expiresAt)])
-			return reply === "OK"
-		},
-	},
 })
 
+// searchUsers matches name, email and the exact user ID and returns
+// { id, name?, email?, avatar?, attributes? } objects mapped field by field.
 devora.register(DEVORA_ENDPOINTS.USER_SEARCH, async (req) => ({
-	users: await searchUsers(req.query.term),
+	users: await searchUsers(String(req.query.term ?? ""), Number(req.query.limit ?? 10)),
 }))
 devora.register(DEVORA_ENDPOINTS.IMPERSONATE, async (req) => {
 	const ctx = req.devoraContext // verified only after HMAC passes
@@ -53,10 +38,16 @@ devora.register(DEVORA_ENDPOINTS.IMPERSONATE, async (req) => {
 	return { token: await mintToken(ctx.targetUser.id, ctx) }
 })
 devora.register(DEVORA_ENDPOINTS.TERMINATE, async (req) => {
-	await invalidateSession(req.sessionId)
+	const sessionId = req.params.id
+	const { reason } = req.body as ImpersonationTerminateRequest
+	// Revoke every credential issued for this Devora session, including one issued
+	// after this call. Must be idempotent: Devora retries (up to 5 attempts over 6 hours).
+	await auth.revokeImpersonationSession({ sessionId, reason })
 	return { success: true }
 })
 ```
+
+User search should match name, email and the exact user ID. `attributes` are optional display fields such as company, role or plan: up to 12 per user, lowercase keys like `last_login`, and string, number, boolean or `null` values. Devora drops invalid entries silently; see [Search results and templates](https://docs.devora.sh/guide/search-results) for the limits and how your team lays out results.
 
 Mount them in a single catch-all route:
 
@@ -71,18 +62,12 @@ export const { GET, POST, PUT, PATCH, DELETE } = createDevoraRouteHandlers(devor
 
 Set your app's public URL + mount path (`/api/devora`) in the Devora dashboard.
 
-The SDK takes its environment from the `environment` option, then `DEVORA_ENV`, then
-`NODE_ENV`, and defaults to production; in production it refuses to start without a
-`replayStore`. `next build` and `next start` set `NODE_ENV=production`. Any store whose
-`consume` is an atomic insert-if-absent shared by every instance works; see the
-[replay-store contract](https://github.com/getdevora/devora-sdks/blob/main/SIGNING.md#replay-store).
+Each verified request is claimed once from Devora before your handler runs, so
+replay protection needs no storage on your side. Your app must be able to make
+outbound HTTPS requests to the Devora API. See
+[SIGNING.md](https://github.com/getdevora/devora-sdks/blob/main/SIGNING.md#request-claims).
 `lib/devora.ts` is also evaluated while `next build` collects route data, so the
 `DEVORA_*` variables must be set at build time too.
-
-**Local development only:** `next dev` sets `NODE_ENV=development`, so unless the
-`environment` option or `DEVORA_ENV` says otherwise (`DEVORA_ENV=production` wins over
-`NODE_ENV`), you can omit `replayStore` there and the SDK keeps request ids in memory.
-That protects a single process only; never deploy without a `replayStore`.
 
 ## Backend — guard your own API routes
 

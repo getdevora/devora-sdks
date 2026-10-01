@@ -11,7 +11,7 @@ Node.js 20 or later.
 ## Installation
 
 ```bash
-npm install @devorash/node @devorash/express express redis
+npm install @devorash/node @devorash/express express
 # TypeScript projects also need the type packages:
 npm install -D @types/express @types/node
 ```
@@ -20,47 +20,46 @@ npm install -D @types/express @types/node
 
 ```typescript
 import express from "express"
-import { createClient } from "redis"
-import { devoraSDK, DEVORA_ENDPOINTS } from "@devorash/node"
+import { devoraSDK, DEVORA_ENDPOINTS, type ImpersonationTerminateRequest } from "@devorash/node"
 import { expressAdapter } from "@devorash/express"
-
-// Replay protection shared by every instance of your backend (required in production).
-const redis = createClient({ url: process.env.REDIS_URL }).on("error", (err) => console.error("Redis error", err))
-let redisReady: Promise<unknown> | undefined // one connection, shared by concurrent first requests
 
 // Initialize SDK
 const sdk = devoraSDK({
 	apiKey: process.env.DEVORA_API_KEY!, // pk_server_live_...
 	secretKey: process.env.DEVORA_SECRET_KEY!, // sk_server_live_...
 	orgId: process.env.DEVORA_ORG_ID!,
-	replayStore: {
-		async consume(namespace, requestId, expiresAt) {
-			await (redisReady ??= redis.connect().catch((err) => {
-				redisReady = undefined // retry on the next request
-				throw err
-			}))
-			const key = `devora:replay:${namespace}:${requestId}`
-			// Atomic insert-if-absent kept until expiresAt; an error makes the SDK fail closed (503).
-			const reply = await redis.sendCommand<string | null>(["SET", key, "1", "NX", "PXAT", String(expiresAt)])
-			return reply === "OK"
-		},
-	},
 })
 
 // Register every handler before creating the adapter.
 sdk.register(DEVORA_ENDPOINTS.USER_SEARCH, async (req) => {
-	const { term } = req.query
-	return { users: await searchUsers(term) }
+	const { term, limit } = req.query
+	// Match name, email and the exact user ID with a parameterised query.
+	const users = await searchUsers(String(term ?? ""), Number(limit ?? 10))
+	return {
+		users: users.map((u) => ({
+			id: u.id,
+			name: u.name,
+			email: u.email,
+			attributes: { company: u.company, role: u.role, plan: u.plan },
+		})),
+	}
 })
 
 sdk.register(DEVORA_ENDPOINTS.IMPERSONATE, async (req) => {
-	const { id } = req.params
-	return { token: await generateToken(id), data: {} }
+	// Set only after the signature is verified: trust it, not raw params.
+	const ctx = req.devoraContext
+	if (!ctx) throw new Error("Missing verified Devora context")
+	// Store ctx (including ctx.sessionId) in the token and expire it by ctx.expiresAt,
+	// so TERMINATE can revoke it and createImpersonationGuard can read it back.
+	return { token: await generateToken(ctx.targetUser.id, ctx) }
 })
 
 sdk.register(DEVORA_ENDPOINTS.TERMINATE, async (req) => {
-	const { id } = req.params
-	await invalidateSession(id)
+	const sessionId = req.params.id
+	const { reason } = req.body as ImpersonationTerminateRequest
+	// Revoke every credential issued for this Devora session, including one issued
+	// after this call. Must be idempotent: Devora retries (up to 5 attempts over 6 hours).
+	await auth.revokeImpersonationSession({ sessionId, reason })
 	return { success: true }
 })
 
@@ -73,17 +72,12 @@ app.use(express.json())
 app.listen(3000)
 ```
 
-The environment comes from the `environment` option, else `DEVORA_ENV`, else
-`NODE_ENV`. Anything other than `development` or `test` (including unset) is
-production, and production refuses to start without a `replayStore`. Any store
-whose `consume` is an atomic insert-if-absent shared by every instance works;
-see the
-[replay-store contract](https://github.com/getdevora/devora-sdks/blob/main/SIGNING.md#replay-store).
+User search should match name, email and the exact user ID. `attributes` are optional display fields such as company, role or plan: up to 12 per user, lowercase keys like `last_login`, and string, number, boolean or `null` values. Devora drops invalid entries silently; see [Search results and templates](https://docs.devora.sh/guide/search-results) for the limits and how your team lays out results.
 
-**Local development only:** to run without Redis, omit `replayStore` and start
-the process with `DEVORA_ENV=development` (or pass `environment: "development"`).
-The SDK then keeps request ids in memory, which protects a single process only.
-Never use this in production.
+Each verified request is claimed once from Devora before your handler runs, so
+replay protection needs no storage on your side. Your backend must be able to
+make outbound HTTPS requests to the Devora API. See
+[SIGNING.md](https://github.com/getdevora/devora-sdks/blob/main/SIGNING.md#request-claims).
 
 ## API Reference
 

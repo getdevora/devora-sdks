@@ -6,7 +6,6 @@ import type { BrowserResumeCode } from "@devorash/core"
 
 import type { BackendSDKConfig, DevoraRequest, RouteHandler, SDKInfo } from "@devorash/core"
 import type { ScopeConfig } from "./scope-config.js"
-import type { ReplayStore } from "./replay-store.js"
 
 /**
  * Extended backend SDK configuration for Node.js
@@ -24,17 +23,7 @@ export interface NodeBackendSDKConfig extends BackendSDKConfig {
 	logger?: Logger
 	/** Statistics collection */
 	collectStats?: boolean
-	/** Required in production so replay rejection works across processes/instances. */
-	replayStore?: ReplayStore
-	/**
-	 * Runtime environment. Anything other than "development" or "test" is treated
-	 * as production, which requires `replayStore`. Falls back to `DEVORA_ENV`,
-	 * then `NODE_ENV`, then "production" (fail closed).
-	 */
-	environment?: DevoraEnvironment
 }
-
-export type DevoraEnvironment = "development" | "test" | "production"
 
 /**
  * Logger interface for custom logging
@@ -128,7 +117,8 @@ export interface DevoraBackendSDK {
 	/**
 	 * Verify a signed request from Devora over its exact wire bytes (signature
 	 * v3): headers, key and org, timestamp, raw path and query, body digest,
-	 * direction, then single-use request id. Nothing is re-serialized.
+	 * direction; then claim its request id from Devora so it is used once.
+	 * Nothing is re-serialized.
 	 * Optional tolerance (seconds) overrides the SDK config for this call.
 	 */
 	verifyRequest: (

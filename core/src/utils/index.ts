@@ -545,16 +545,19 @@ export function getErrorStatusCode(errorCode?: string): number {
 		return 401
 	}
 
-	// Impersonation policy or replay protection unavailable -> 503 (fail closed)
+	// Impersonation policy or the Devora request claim unavailable -> 503 (fail closed)
 	if (
 		errorCode === "IMPERSONATION_POLICY_UNAVAILABLE" ||
-		errorCode === "REPLAY_STORE_UNAVAILABLE"
+		errorCode === "REQUEST_CLAIM_UNAVAILABLE"
 	) {
 		return 503
 	}
 
-	// A signed request id seen before -> 401
+	// A signed request id Devora has already seen claimed -> 401
 	if (errorCode === "REPLAYED_REQUEST") return 401
+
+	// A start request for a session Devora is no longer starting -> 409
+	if (errorCode === "SESSION_NOT_STARTABLE") return 409
 
 	// The body digest is over wire bytes; encoded bodies are refused -> 415
 	if (errorCode === "UNSUPPORTED_CONTENT_ENCODING") return 415

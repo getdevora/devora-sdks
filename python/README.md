@@ -11,13 +11,12 @@ Python backend core SDK for Devora customer integrations.
 ## Requirements
 
 - Python `>=3.10,<4.0`
-- In production, a replay store shared by every worker (the example below uses
-  Redis 6.2 or newer, for `SET ... PXAT`)
+- Outbound HTTPS access from your backend to the Devora API
 
 ## Install
 
 ```bash
-pip install devora-python redis
+pip install devora-python
 ```
 
 ## Quick Start
@@ -26,31 +25,32 @@ pip install devora-python redis
 import os
 from dataclasses import asdict
 
-import redis
 from devora_sdk import DEVORA_ENDPOINTS, devora_sdk
-
-# Replay protection shared by every worker and instance (required in production).
-redis_client = redis.Redis.from_url(os.environ["REDIS_URL"])
-
-
-class RedisReplayStore:
-    def consume(self, namespace: str, request_id: str, expires_at: int) -> bool:
-        # Atomic insert-if-absent kept until expires_at; an exception makes the SDK fail closed (503).
-        key = f"devora:replay:{namespace}:{request_id}"
-        return bool(redis_client.set(key, b"1", nx=True, pxat=expires_at))
-
 
 sdk = devora_sdk(
     api_key=os.environ["DEVORA_API_KEY"],  # pk_server_live_...
     secret_key=os.environ["DEVORA_SECRET_KEY"],  # sk_server_live_...
     org_id=os.environ["DEVORA_ORG_ID"],
-    replay_store=RedisReplayStore(),
 )
 
 
 @sdk.register(DEVORA_ENDPOINTS.USER_SEARCH)
 def search_users(req):
-    return {"users": search_customer_users(req.query.get("term", ""))}
+    # Match name, email and the exact user ID with a parameterised query.
+    term = req.query.get("term", "")
+    limit = int(req.query.get("limit", 10))
+    users = search_customer_users(term, limit)
+    return {
+        "users": [
+            {
+                "id": u.id,
+                "name": u.name,
+                "email": u.email,
+                "attributes": {"company": u.company, "role": u.role, "plan": u.plan},
+            }
+            for u in users
+        ]
+    }
 
 
 @sdk.register(DEVORA_ENDPOINTS.IMPERSONATE)
@@ -63,7 +63,24 @@ def impersonate(req):
     devora = {**asdict(ctx), "is_impersonation": True}
     token = create_customer_token(ctx.target_user["id"], devora)
     return {"token": token}
+
+
+@sdk.register(DEVORA_ENDPOINTS.TERMINATE)
+def terminate(req):
+    session_id = req.params["id"]
+    reason = (req.body or {}).get("reason")
+    # YOU IMPLEMENT: mark this Devora session revoked so every credential issued for it
+    # is rejected, including one issued after this call. Must be idempotent: Devora
+    # retries with a new request id (up to 5 attempts over 6 hours).
+    auth.revoke_impersonation_session(session_id=session_id, reason=reason)
+    return {"success": True}
 ```
+
+User search should match name, email and the exact user ID. `attributes` are optional display fields such as company, role or plan: up to 12 per user, lowercase keys like `last_login`, and string, number, boolean or `null` values. Devora drops invalid entries silently; see [Search results and templates](https://docs.devora.sh/guide/search-results) for the limits and how your team lays out results.
+
+Each verified request is claimed once from Devora before your handler runs, so
+replay protection needs no storage on your side; your backend only needs
+outbound HTTPS access to the Devora API. See [Replay protection](#replay-protection).
 
 Register every handler, then mount the SDK with the
 [Django](https://pypi.org/project/devora-django/) or
@@ -85,32 +102,50 @@ def handle_devora(method: str, path: str, query: str, body: bytes, headers) -> t
     return status, result  # send as JSON with Cache-Control: private, no-store
 ```
 
-`async_process_request` runs signature verification, the replay store and
+`async_process_request` runs signature verification, the request claim and
 synchronous handlers in a worker thread, so it never blocks the event loop.
 `process_request` cannot run `async def` handlers.
 
-### Production replay store
+### Replay protection
 
-Every signed request carries a single-use id. In production the SDK needs a
-shared, atomic `replay_store` so a captured request cannot be replayed against
-another worker or instance. The environment comes from `environment=`, else
-`DEVORA_ENV`, else `NODE_ENV`. Anything other than `development` or `test`
-(including unset) is production, and production refuses to start without a
-`replay_store`. Any store whose `consume` is an atomic insert-if-absent works;
-see the
-[replay-store contract](https://github.com/getdevora/devora-sdks/blob/main/SIGNING.md#replay-store).
+Every signed request carries a single-use id. After the signature verifies, the
+SDK claims that id from Devora with one signed call
+(`POST /api/sdk/request-claim`, `REQUEST_CLAIM_TIMEOUT_SECONDS = 3.0`); the
+handler runs only after a successful claim. Only requests whose signature
+verified are ever claimed, so unauthenticated traffic cannot use up request
+ids. The claim can fail with:
 
-**Local development only:** to run without Redis, omit `replay_store` and set
-`DEVORA_ENV=development` (or pass `environment="development"`). The SDK then
-keeps request ids in memory, which protects a single process only. Never use
-this in production.
+| Status | `errorCode`                 | Cause                                                                    |
+| ------ | --------------------------- | ------------------------------------------------------------------------ |
+| 401    | `REPLAYED_REQUEST`          | Devora already claimed this request id (the request was already processed) |
+| 409    | `SESSION_NOT_STARTABLE`     | Start request for a session Devora is no longer starting                 |
+| 401    | `TIMESTAMP_EXPIRED`         | Devora says the request is too old to claim                              |
+| 503    | `REQUEST_CLAIM_UNAVAILABLE` | Devora could not be reached or gave no clear answer (fails closed)       |
 
-`consume` must be a regular method returning `True` or `False`; the SDK calls
-it synchronously, including from `async_process_request` (in a worker thread).
-Use a synchronous client such as `redis.Redis`: an `async def consume` fails
-closed with a 503. Keep it a single short round trip, and do not let the store
-evict these keys before they expire. A unique-key database insert with an
-expiry column works too.
+Devora's **Test connection** check is claimed too, so it also proves your
+backend can reach the Devora API. See
+[SIGNING.md](https://github.com/getdevora/devora-sdks/blob/main/SIGNING.md#request-claims).
+
+### Session termination
+
+Devora calls `DELETE /impersonate/:id/terminate` when a session ends. The
+session id is `req.params["id"]` (also `req.session_id`), and the body is
+`{"reason": ..., "terminatedBy": ...}`. `terminatedBy` is the external user id
+of the person who ended the session and is absent for automatic ends. `reason`
+is one of `user_ended`, `time_limit`, `admin_terminated`, `superseded`,
+`request_revoked`, `membership_revoked`, `role_downgraded`,
+`workos_session_revoked`, `principal_erased`, `organization_erased`,
+`start_failed` (Devora sent the start request, and your handler may have issued
+a token, but the session never started) or `not_started` (your handler issued a
+token but the impersonation link was never opened).
+
+Devora retries a failed terminate call (up to 5 attempts over 6 hours, with
+backoff), each as a new signed request with a new request id, so the handler
+must be idempotent; any 2xx counts as delivered. A 4xx other than 408, 425 or 429 is
+not retried; when overloaded, answer 429 or 503 with `Retry-After`. Store the
+Devora session id with the credential you mint and revoke by session, so a
+credential minted by a slow start handler after the terminate is still rejected. See
+[Session lifecycle & cleanup](https://docs.devora.sh/guide/session-lifecycle).
 
 The guard's session-liveness checker caches at most 1,024 results and permits at
 most 64 distinct concurrent lookups per checker. Requests for the same session
@@ -135,7 +170,6 @@ sdk = devora_sdk(
     api_key=os.environ["DEVORA_API_KEY"],
     secret_key=os.environ["DEVORA_SECRET_KEY"],
     org_id=os.environ["DEVORA_ORG_ID"],
-    replay_store=RedisReplayStore(),
     prefetch_scope_config=True,
 )
 ```

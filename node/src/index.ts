@@ -5,29 +5,12 @@
  *
  * @example
  * ```typescript
- * import { createClient } from "redis"
  * import { devoraSDK, DEVORA_ENDPOINTS } from "@devorash/node"
- *
- * // Replay protection shared by every instance of your backend (required in production).
- * const redis = createClient({ url: process.env.REDIS_URL }).on("error", (err) => console.error("Redis error", err))
- * let redisReady: Promise<unknown> | undefined // one connection, shared by concurrent first requests
  *
  * const sdk = devoraSDK({
  *   apiKey: process.env.DEVORA_API_KEY!,
  *   secretKey: process.env.DEVORA_SECRET_KEY!,
  *   orgId: process.env.DEVORA_ORG_ID!,
- *   replayStore: {
- *     async consume(namespace, requestId, expiresAt) {
- *       await (redisReady ??= redis.connect().catch((err) => {
- *         redisReady = undefined // retry on the next request
- *         throw err
- *       }))
- *       const key = `devora:replay:${namespace}:${requestId}`
- *       // Atomic insert-if-absent kept until expiresAt; an error makes the SDK fail closed (503).
- *       const reply = await redis.sendCommand<string | null>(["SET", key, "1", "NX", "PXAT", String(expiresAt)])
- *       return reply === "OK"
- *     },
- *   },
  * })
  *
  * sdk.register(DEVORA_ENDPOINTS.USER_SEARCH, async (req) => ({
@@ -53,7 +36,7 @@
  */
 
 // Main SDK
-export { devoraSDK, resolveEnvironment } from "./sdk.js"
+export { devoraSDK } from "./sdk.js"
 
 // HMAC utilities
 export { sha256Hex, signRequest } from "./hmac.js"
@@ -94,10 +77,6 @@ export type {
 export { createScopeConfigFetcher } from "./scope-config.js"
 export type { ScopeConfig, ScopeConfigFetcherOptions } from "./scope-config.js"
 
-// Persistent replay protection
-export { InMemoryReplayStore } from "./replay-store.js"
-export type { ReplayStore } from "./replay-store.js"
-
 // Types
 export type {
 	NodeBackendSDKConfig,
@@ -110,7 +89,6 @@ export type {
 	ValidationResult,
 	SignedRequestInput,
 	FrameworkAdapter,
-	DevoraEnvironment,
 } from "./types.js"
 
 // Re-export commonly used items from core
@@ -142,6 +120,7 @@ export type {
 	DevoraRequest,
 	DevoraResponse,
 	DevoraUser,
+	DevoraUserAttributeValue,
 	UserSearchRequest,
 	UserSearchResponse,
 	ImpersonationScope,
@@ -150,6 +129,7 @@ export type {
 	ImpersonationStartRequest,
 	ImpersonationStartResponse,
 	ImpersonationTerminateRequest,
+	SessionTerminationReason,
 	ImpersonationTerminateResponse,
 	RouteHandler,
 	RouteDefinition,

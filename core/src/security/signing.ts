@@ -51,7 +51,8 @@ export type SignatureErrorCode =
 	| "UNSUPPORTED_CONTENT_ENCODING"
 	| "INVALID_SIGNATURE"
 	| "REPLAYED_REQUEST"
-	| "REPLAY_STORE_UNAVAILABLE"
+	| "SESSION_NOT_STARTABLE"
+	| "REQUEST_CLAIM_UNAVAILABLE"
 
 /** Header values as frameworks expose them. */
 export type HeaderMap = Record<string, string | string[] | undefined>
@@ -237,23 +238,6 @@ export function parseSignatureHeaders(headers: HeaderMap): SignatureHeaderResult
 export function hasIdentityContentEncoding(headers: HeaderMap): boolean {
 	const value = getSingleHeader(headers, "content-encoding")
 	return value === undefined || value === "identity"
-}
-
-/** Replay-store namespace: version, direction and key. */
-export function replayNamespace(direction: SigningDirection, keyId: string): string {
-	return `v${SIGNING.VERSION}:${direction}:${keyId}`
-}
-
-/**
- * Nonce lifetime covering the whole acceptance window: the floor second of the
- * timestamp check plus one second of clock jitter.
- */
-export function replayExpiresAtMs(
-	sentAt: number,
-	nowSeconds: number,
-	toleranceSeconds: number
-): number {
-	return (Math.max(nowSeconds, sentAt) + toleranceSeconds + 2) * 1000
 }
 
 /**

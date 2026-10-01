@@ -64,10 +64,12 @@ def get_error_status_code(error_code: Optional[str]) -> int:
 		"IMPERSONATION_SESSION_ENDED",
 	):
 		return 401
-	if error_code in ("IMPERSONATION_POLICY_UNAVAILABLE", "REPLAY_STORE_UNAVAILABLE"):
+	if error_code in ("IMPERSONATION_POLICY_UNAVAILABLE", "REQUEST_CLAIM_UNAVAILABLE"):
 		return 503
 	if error_code == "REPLAYED_REQUEST":
 		return 401
+	if error_code == "SESSION_NOT_STARTABLE":
+		return 409
 	if error_code == "UNSUPPORTED_CONTENT_ENCODING":
 		return 415
 	if error_code in ("IMPERSONATION_ENDPOINT_BLOCKED", "IMPERSONATION_SCOPE_VIOLATION"):

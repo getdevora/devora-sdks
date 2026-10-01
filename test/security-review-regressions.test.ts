@@ -16,6 +16,9 @@ import {
 	getExchangeCodeFromURL,
 	getExchangeVerifier,
 	cleanURL,
+	hasExchangeParameterInURL,
+	hasUntakenExchangeInURL,
+	settleExchange,
 } from "../browser/src/token-detector"
 import { createExchangeWindow } from "./support/exchange-window"
 import { SDK_DEFAULTS } from "../core/src/constants/index"
@@ -119,6 +122,23 @@ test("every exchange parameter is scrubbed while hash router state is preserved"
 	expect(location.hash).toBe("#/home?view=1")
 	await getExchangeVerifier()
 	cleanURL()
+})
+
+test("apps see a pending exchange until the SDK settles it, but init takes it only once", async () => {
+	cleanURL()
+	settleExchange()
+	const { win } = createExchangeWindow()
+	Object.defineProperty(globalThis, "window", { configurable: true, value: win })
+	expect(hasExchangeParameterInURL()).toBe(true)
+	expect(hasUntakenExchangeInURL()).toBe(true)
+	await getExchangeVerifier()
+	// init takes the exchange: a second init (e.g. StrictMode) must not take it again...
+	cleanURL()
+	expect(hasUntakenExchangeInURL()).toBe(false)
+	// ...but the app must still hold back its login redirect while it is redeemed.
+	expect(hasExchangeParameterInURL()).toBe(true)
+	settleExchange()
+	expect(hasExchangeParameterInURL()).toBe(false)
 })
 
 test("Express mount-relative deny rules block both scopes before handler side effects", async () => {

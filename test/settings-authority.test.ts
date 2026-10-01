@@ -232,7 +232,6 @@ test("Node initialization discards caller capture preferences", async () => {
 		apiKey: "pk_server_live_" + "A".repeat(32),
 		secretKey: "sk_server_live_" + "a".repeat(64),
 		orgId: "org_test",
-		environment: "test",
 		apiUrl: "https://devora.example",
 		recordingAllowed: false,
 		recordingEnabled: true,

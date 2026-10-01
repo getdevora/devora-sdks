@@ -137,37 +137,20 @@ def test_sync_guard_does_not_treat_async_denial_as_authorization():
     assert not decision.allowed and decision.status_code == 403
 
 
-@pytest.mark.parametrize("verdict", ["false", 1, {}, [], None])
-def test_replay_store_cannot_authorize_with_truthy_nonboolean_result(verdict):
+@pytest.mark.parametrize("data", [{"claimed": "true"}, {"claimed": 1}, {}, None, [], {"claimed": False}])
+def test_devora_claim_reply_without_explicit_claimed_true_never_authorizes(data, fake_devora):
+    from unittest.mock import patch
+
+    import devora_sdk.sdk as sdk_module
     from devora_sdk import devora_sdk
     from signing_support import API_KEY, ORG_ID, SECRET_KEY, sign
 
-    class InvalidStore:
-        def consume(self, *_):
-            return verdict
-
-    sdk = devora_sdk(API_KEY, SECRET_KEY, ORG_ID, replay_store=InvalidStore(), prefetch_scope_config=False)
+    sdk = devora_sdk(API_KEY, SECRET_KEY, ORG_ID, prefetch_scope_config=False)
     try:
         headers, _ = sign("GET", "/test")
-        result = sdk.verify_request("GET", "/test", "", b"", headers)
-        assert not result.valid and result.error_code == "REPLAY_STORE_UNAVAILABLE"
-    finally:
-        sdk.destroy()
-
-
-def test_async_replay_store_is_rejected_instead_of_trusting_coroutine():
-    from devora_sdk import devora_sdk
-    from signing_support import API_KEY, ORG_ID, SECRET_KEY, sign
-
-    class AsyncStore:
-        async def consume(self, *_):
-            return False
-
-    sdk = devora_sdk(API_KEY, SECRET_KEY, ORG_ID, replay_store=AsyncStore(), prefetch_scope_config=False)
-    try:
-        headers, _ = sign("GET", "/test")
-        result = sdk.verify_request("GET", "/test", "", b"", headers)
-        assert not result.valid and result.error_code == "REPLAY_STORE_UNAVAILABLE"
+        with patch.object(sdk_module, "control_plane_request", return_value=(200, {"success": True, "data": data}, {})):
+            result = sdk.verify_request("GET", "/test", "", b"", headers)
+        assert not result.valid and result.error_code == "REQUEST_CLAIM_UNAVAILABLE"
     finally:
         sdk.destroy()
 
