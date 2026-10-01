@@ -1,6 +1,6 @@
 {
 	"name": "@devorash/svelte",
-	"version": "0.1.1",
+	"version": "0.1.2",
 	"description": "Devora Svelte SDK - stores for impersonation",
 	"keywords": [
 		"devora",

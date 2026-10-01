@@ -12,13 +12,12 @@ FastAPI adapter for the Devora Python backend SDK.
 
 - Python `>=3.10,<4.0`
 - FastAPI `>=0.133.0,<1.0.0`
-- In production, a replay store shared by every worker (the example below uses
-  Redis 6.2 or newer, for `SET ... PXAT`)
+- Outbound HTTPS access from your backend to the Devora API
 
 ## Install
 
 ```bash
-pip install devora-python devora-fastapi redis
+pip install devora-python devora-fastapi
 ```
 
 ## Quick Start
@@ -26,56 +25,68 @@ pip install devora-python devora-fastapi redis
 ```python
 import os
 
-import redis
 from fastapi import FastAPI
 from devora_sdk import DEVORA_ENDPOINTS, devora_sdk
 from devora_sdk_fastapi import fastapi_router
-
-# Replay protection shared by every worker and instance (required in production).
-redis_client = redis.Redis.from_url(os.environ["REDIS_URL"])
-
-
-class RedisReplayStore:
-    def consume(self, namespace: str, request_id: str, expires_at: int) -> bool:
-        # Atomic insert-if-absent kept until expires_at; an exception makes the SDK fail closed (503).
-        key = f"devora:replay:{namespace}:{request_id}"
-        return bool(redis_client.set(key, b"1", nx=True, pxat=expires_at))
 
 
 sdk = devora_sdk(
     api_key=os.environ["DEVORA_API_KEY"],  # pk_server_live_...
     secret_key=os.environ["DEVORA_SECRET_KEY"],  # sk_server_live_...
     org_id=os.environ["DEVORA_ORG_ID"],
-    replay_store=RedisReplayStore(),
 )
 
 
 @sdk.register(DEVORA_ENDPOINTS.USER_SEARCH)
 async def search_users(req):
-    return {"users": await search_customer_users(req.query.get("term", ""))}
+    # Match name, email and the exact user ID with a parameterised query.
+    term = req.query.get("term", "")
+    limit = int(req.query.get("limit", 10))
+    users = await search_customer_users(term, limit)
+    return {
+        "users": [
+            {
+                "id": u.id,
+                "name": u.name,
+                "email": u.email,
+                "attributes": {"company": u.company, "role": u.role, "plan": u.plan},
+            }
+            for u in users
+        ]
+    }
+
+
+@sdk.register(DEVORA_ENDPOINTS.TERMINATE)
+async def terminate(req):
+    session_id = req.params["id"]
+    reason = (req.body or {}).get("reason")
+    # YOU IMPLEMENT: mark this Devora session revoked so every credential issued for it
+    # is rejected, including one issued after this call. Must be idempotent: Devora
+    # retries with a new request id (up to 5 attempts over 6 hours).
+    await auth.revoke_impersonation_session(session_id=session_id, reason=reason)
+    return {"success": True}
 
 
 app = FastAPI()
 app.include_router(fastapi_router(sdk), prefix="/devora")
 ```
 
+User search should match name, email and the exact user ID. `attributes` are optional display fields such as company, role or plan: up to 12 per user, lowercase keys like `last_login`, and string, number, boolean or `null` values. Devora drops invalid entries silently; see [Search results and templates](https://docs.devora.sh/guide/search-results) for the limits and how your team lays out results.
+
 Register every handler before calling `fastapi_router(sdk)`; routes registered
 later are not mounted. Handlers may be sync or async; sync handlers run in a
 worker thread.
 
-The environment comes from `environment=`, else `DEVORA_ENV`, else `NODE_ENV`.
-Anything other than `development` or `test` (including unset) is production,
-and production refuses to start without a `replay_store`. Any store whose
-`consume` is an atomic insert-if-absent shared by every worker works; see the
-[replay-store contract](https://github.com/getdevora/devora-sdks/blob/main/SIGNING.md#replay-store).
-`consume` must be a regular method: the SDK calls it from a worker thread, so
-use the synchronous `redis.Redis` client even in an async app. An
-`async def consume` fails closed with a 503.
+Each verified request is claimed once from Devora before your handler runs, so
+replay protection needs no storage on your side; your backend only needs
+outbound HTTPS access to the Devora API. See
+[SIGNING.md](https://github.com/getdevora/devora-sdks/blob/main/SIGNING.md#request-claims).
 
-**Local development only:** to run without Redis, omit `replay_store` and set
-`DEVORA_ENV=development` (or pass `environment="development"`). The SDK then
-keeps request ids in memory, which protects a single process only. Never use
-this in production.
+The terminate body is `{"reason": ..., "terminatedBy": ...}`; Devora retries a
+failed call (up to 5 attempts over 6 hours) with a new request id, so keep the
+handler idempotent. Return a 2xx, or 429/503 with `Retry-After` when overloaded; any
+other 4xx stops the retries. See
+[Session lifecycle & cleanup](https://docs.devora.sh/guide/session-lifecycle).
 
 For protected application routes, install the guard middleware and return the
 context dict your `IMPERSONATE` handler stored, read back from your

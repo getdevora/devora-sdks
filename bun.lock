@@ -16,7 +16,7 @@
     },
     "core": {
       "name": "@devorash/core",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "devDependencies": {
         "@types/node": "^26.0.1",
         "typescript": "^6.0.3"
@@ -24,7 +24,7 @@
     },
     "node": {
       "name": "@devorash/node",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@devorash/core": "workspace:*"
       },
@@ -35,7 +35,7 @@
     },
     "browser": {
       "name": "@devorash/browser",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@devorash/core": "workspace:*",
         "@rrweb/rrweb-plugin-console-record": "2.0.1",
@@ -50,7 +50,7 @@
     },
     "express": {
       "name": "@devorash/express",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@devorash/core": "workspace:*",
         "@devorash/node": "workspace:*"
@@ -67,14 +67,14 @@
     },
     "fastify": {
       "name": "@devorash/fastify",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@devorash/core": "workspace:*",
         "@devorash/node": "workspace:*"
       },
       "devDependencies": {
         "@types/node": "^26.0.1",
-        "fastify": "^5.12.1",
+        "fastify": "^5.12.5",
         "typescript": "^6.0.3"
       },
       "peerDependencies": {
@@ -83,7 +83,7 @@
     },
     "hono": {
       "name": "@devorash/hono",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@devorash/core": "workspace:*",
         "@devorash/node": "workspace:*"
@@ -99,7 +99,7 @@
     },
     "react": {
       "name": "@devorash/react",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@devorash/browser": "workspace:*",
         "@devorash/core": "workspace:*"
@@ -115,7 +115,7 @@
     },
     "vue": {
       "name": "@devorash/vue",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@devorash/browser": "workspace:*",
         "@devorash/core": "workspace:*"
@@ -130,7 +130,7 @@
     },
     "svelte": {
       "name": "@devorash/svelte",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@devorash/browser": "workspace:*",
         "@devorash/core": "workspace:*"
@@ -145,7 +145,7 @@
     },
     "solid": {
       "name": "@devorash/solid",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@devorash/browser": "workspace:*",
         "@devorash/core": "workspace:*"
@@ -162,7 +162,7 @@
     },
     "nextjs": {
       "name": "@devorash/nextjs",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "dependencies": {
         "@devorash/core": "workspace:*",
         "@devorash/node": "workspace:*",
@@ -189,7 +189,7 @@
     "ajv": "^8.20.0",
     "baseline-browser-mapping": "^2.11.0",
     "body-parser": "^2.3.0",
-    "devalue": "^5.8.1",
+    "devalue": "^5.9.4",
     "fast-uri": "^4.1.3",
     "find-my-way": "^9.9.0",
     "hono": "^4.13.5",
@@ -1835,10 +1835,10 @@
       "sha512-reYkTUJAZb9gUuZ2RvVCNhVHdg62RHnJ7WJl8ftMi4diZ6NWlciOzQN88pUhSELEwflJht4oQDv0F0BMlwaYtA=="
     ],
     "devalue": [
-      "devalue@5.9.2",
+      "devalue@5.9.4",
       "",
       {},
-      "sha512-po4PAY5c53tw5XMocSnf8A/5OHhbbUftpr93aEN6BBoAdntUmK7vu7wOATqvt7cXO7m1Cl4gMVn6p7n6n4mj0w=="
+      "sha512-sPAT4pztbu6586/hrhOnMKS17IJrvg12mXiSPSS3W5qDeN2RGgvZ0diZCm31dBbnevfVmujNO3IM2wrS4Y2Rhg=="
     ],
     "dir-glob": [
       "dir-glob@3.0.1",
@@ -2060,7 +2060,7 @@
       "sha512-vZeoMRB4epNr7QfdHxel7te/RcX16CxyXI07JCCTFWZA2s4v1azGNESRj+2EoaHSaWFL/Z3GmKT2jF6A202jLg=="
     ],
     "fastify": [
-      "fastify@5.12.1",
+      "fastify@5.12.5",
       "",
       {
         "dependencies": {
@@ -2081,7 +2081,7 @@
           "toad-cache": "^3.7.0"
         }
       },
-      "sha512-FWi+tQvwxR/PeRX7Z2mhfEF5ozJ3jn9asiiclzKXNSzJRHAYcU924aIOKAdHFJ+YIKieh3cqr1IwCOvTr41B3Q=="
+      "sha512-OB2k1dlxs5/NAABqeKV2FUHkSD2BbENsCak8yULVcymn3fHIPDVa9TI3SDnJSWYSllZmSYuZXy2gTnsT+Sut1A=="
     ],
     "fastq": [
       "fastq@1.20.3",

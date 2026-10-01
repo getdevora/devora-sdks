@@ -3,6 +3,11 @@ import { createDevoraSDK } from "../browser/src/sdk.ts"
 import { SessionRecorder } from "../browser/src/session-recorder.ts"
 import { patchNetworkLayer, restoreNetworkLayer } from "../browser/src/scope-enforcer.ts"
 import { EXCHANGE_CODE, EXCHANGE_VERIFIER, createExchangeWindow } from "./support/exchange-window"
+import {
+	cleanURL,
+	hasExchangeParameterInURL,
+	settleExchange,
+} from "../browser/src/token-detector.ts"
 
 const nativeFetch = globalThis.fetch
 const descriptors = new Map<string, PropertyDescriptor | undefined>()
@@ -302,6 +307,34 @@ test("init/destroy/init preserves a scrubbed link and redeems it only once", asy
 	expect(bodies[0]).toMatchObject({ code: EXCHANGE_CODE, verifier: EXCHANGE_VERIFIER })
 	expect(handoffs).toBe(1)
 	expect(sdk.isImpersonating()).toBe(true)
+})
+
+test("a redemption interrupted by destroy stops reporting an exchange in flight", async () => {
+	cleanURL()
+	settleExchange()
+	installWindow()
+	transport(async () => Response.json({ success: true }))
+	let release!: () => void
+	const handedOff = new Promise<void>((resolve) => (release = resolve))
+	let reached!: () => void
+	const inHandoff = new Promise<void>((resolve) => (reached = resolve))
+	const sdk = sdkInstance()
+	const init = sdk.init({
+		...config,
+		autoDetect: true,
+		onImpersonate: async () => {
+			reached()
+			await handedOff
+		},
+	})
+	await inHandoff
+	// The app still sees the link as in flight while the host stores the credential...
+	expect(hasExchangeParameterInURL()).toBe(true)
+	// ...but a teardown that abandons the redemption must not leave it in flight forever.
+	await sdk.destroy()
+	expect(hasExchangeParameterInURL()).toBe(false)
+	release()
+	await init
 })
 
 test("a forwarded exchange link (no dashboard opener) is never redeemed", async () => {

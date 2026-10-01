@@ -10,11 +10,6 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.error import HTTPError
 
-import os
-
-# The SDK fails closed (production) unless the runtime declares itself; tests are development.
-os.environ.setdefault("DEVORA_ENV", "development")
-
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "python" / "src"))
 sys.path.insert(0, str(ROOT / "django" / "src"))
@@ -297,11 +292,11 @@ class PythonSDKCoreTests(unittest.TestCase):
 		from devora_sdk_fastapi import fastapi_router
 
 		sdk = devora_sdk(API_KEY, SECRET_KEY, ORG_ID)
-		sdk.register(DEVORA_ENDPOINTS.USER_BY_ID, lambda req: {"id": req.params.get("id")})
+		sdk.register("/user/:id", lambda req: {"id": req.params.get("id")}, method="GET")
 		app = FastAPI()
 		app.include_router(fastapi_router(sdk), prefix="/devora")
 		client = TestClient(app)
-		signed_path = DEVORA_ENDPOINTS.USER_BY_ID.replace(":id", "a%40b.com")  # strict-encoded "a@b.com"
+		signed_path = "/user/a%40b.com"  # strict-encoded "a@b.com"
 		response = client.get(
 			"/devora/user/a%40b.com",
 			headers=self._signed_headers(sdk, "GET", signed_path, "", None),
@@ -501,13 +496,12 @@ if __name__ == "__main__":
 
 
 class ParityHardeningTests(unittest.TestCase):
-	def test_production_requires_replay_store(self):
-		from devora_sdk import InMemoryReplayStore
-
-		with self.assertRaises(ValueError):
-			devora_sdk(API_KEY, SECRET_KEY, ORG_ID, environment="production")
-		devora_sdk(API_KEY, SECRET_KEY, ORG_ID, environment="production", replay_store=InMemoryReplayStore())
-		devora_sdk(API_KEY, SECRET_KEY, ORG_ID, environment="development")
+	def test_sdk_needs_no_replay_storage_and_ignores_retired_options(self):
+		# Every environment behaves the same: Devora records claimed request ids.
+		sdk = devora_sdk(API_KEY, SECRET_KEY, ORG_ID, environment="production", replay_store=object())
+		self.assertFalse(hasattr(sdk, "environment"))
+		self.assertFalse(hasattr(sdk, "_replay_store"))
+		sdk.destroy()
 
 	def test_stale_policy_is_bounded_to_five_minutes(self):
 		from devora_sdk.policy import STALE_GRACE_MS

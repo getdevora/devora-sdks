@@ -157,10 +157,28 @@ export function getExchangeVerifier(): Promise<string | null> {
 	return capturedVerifier ?? Promise.resolve(null)
 }
 
-/** Whether the page was opened with an exchange parameter (valid or not). */
+/** Set once init has taken the captured exchange; cleared when redemption settles. */
+let exchangeInFlight = false
+
+/**
+ * Whether the page was opened with an exchange parameter (valid or not) whose
+ * redemption has not settled yet. Stays true while the SDK is redeeming it, so
+ * an app can hold back a login redirect until the SDK has finished starting.
+ */
 export function hasExchangeParameterInURL(): boolean {
 	captureExchangeFromURL()
+	return exchangeSeen || exchangeInFlight
+}
+
+/** @internal Whether an exchange parameter is still waiting for init to take it. */
+export function hasUntakenExchangeInURL(): boolean {
+	captureExchangeFromURL()
 	return exchangeSeen
+}
+
+/** @internal The SDK finished (or abandoned) redeeming the taken exchange. */
+export function settleExchange(): void {
+	exchangeInFlight = false
 }
 
 const validScope = (value: unknown): value is "read" | "write" =>
@@ -316,6 +334,7 @@ export async function validateStoredSession(
  * when the code was captured.
  */
 export function cleanURL(): void {
+	exchangeInFlight = exchangeSeen || exchangeInFlight
 	exchangeSeen = false
 	capturedCode = null
 	capturedVerifier = null

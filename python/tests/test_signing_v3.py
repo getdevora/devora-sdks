@@ -23,13 +23,16 @@ from devora_sdk.hmac import signature_matches
 from devora_sdk.signing import build_canonical_string, encode_path_param, parse_signature_headers, strict_encode
 from signing_support import API_KEY, ORG_ID, SECRET_KEY, VECTORS, sign
 from signing_support import strict_encode as ref_encode
+from devora_claims import DEVORA
 
 VECTOR_TOLERANCE = 100_000_000
 C = VECTORS["constants"]
 
 
 def _sdk():
-	return devora_sdk(API_KEY, SECRET_KEY, ORG_ID, environment="development", prefetch_scope_config=False)
+	# Each fresh SDK meets a fresh Devora: the vectors share one request id.
+	DEVORA.reset()
+	return devora_sdk(API_KEY, SECRET_KEY, ORG_ID, prefetch_scope_config=False)
 
 
 def _vector(vector_id):
@@ -145,15 +148,65 @@ def test_replay_timestamp_edges_and_zero_tolerance():
 		sdk.destroy()
 
 
-def test_replay_store_failure_fails_closed():
-	class Down:
-		def consume(self, *_args):
-			raise OSError("store down")
-
-	sdk = devora_sdk(API_KEY, SECRET_KEY, ORG_ID, replay_store=Down(), prefetch_scope_config=False)
+def test_each_verified_request_is_claimed_once_from_devora():
+	sdk = _sdk()
+	other = devora_sdk(API_KEY, SECRET_KEY, ORG_ID, prefetch_scope_config=False)
 	try:
 		headers, _ = sign("GET", "/test")
-		assert sdk.verify_request("GET", "/test", "", b"", headers).error_code == "REPLAY_STORE_UNAVAILABLE"
+		assert sdk.verify_request("GET", "/test", "", b"", headers).valid
+		assert DEVORA.calls == [{"requestId": headers["x-devora-request-id"], "sentAt": headers["x-devora-sent-at"]}]
+		# Another server sees the same Devora record.
+		assert other.verify_request("GET", "/test", "", b"", headers).error_code == "REPLAYED_REQUEST"
+	finally:
+		sdk.destroy()
+		other.destroy()
+
+
+def test_requests_that_fail_verification_are_never_claimed():
+	sdk = _sdk()
+	try:
+		headers, _ = sign("GET", "/test")
+		assert sdk.verify_request("GET", "/test", "", b"", {**headers, "x-devora-signature": "0" * 64}).error_code == "INVALID_SIGNATURE"
+		stale, _ = sign("GET", "/test", sent_at=str(int(time.time()) - 400))
+		assert sdk.verify_request("GET", "/test", "", b"", stale).error_code == "TIMESTAMP_EXPIRED"
+		assert DEVORA.calls == []
+	finally:
+		sdk.destroy()
+
+
+def test_start_request_claims_its_session_and_others_claim_none():
+	sdk = _sdk()
+	try:
+		headers, raw = sign("POST", "/impersonate/u1", body={"sessionId": "session_1", "scope": "read"})
+		assert sdk.verify_request("POST", "/impersonate/u1", "", raw, headers).valid
+		assert DEVORA.calls[-1]["sessionId"] == "session_1"
+		headers, raw = sign("DELETE", "/impersonate/session_1/terminate", body={"reason": "user_ended", "sessionId": "x"})
+		assert sdk.verify_request("DELETE", "/impersonate/session_1/terminate", "", raw, headers).valid
+		assert "sessionId" not in DEVORA.calls[-1]
+		DEVORA.not_startable.add("session_2")
+		headers, raw = sign("POST", "/impersonate/u1", body={"sessionId": "session_2", "scope": "read"})
+		assert sdk.verify_request("POST", "/impersonate/u1", "", raw, headers).error_code == "SESSION_NOT_STARTABLE"
+	finally:
+		sdk.destroy()
+
+
+@pytest.mark.parametrize(
+	"reply,error_code",
+	[
+		("unavailable", "REQUEST_CLAIM_UNAVAILABLE"),
+		("network-error", "REQUEST_CLAIM_UNAVAILABLE"),
+		("malformed", "REQUEST_CLAIM_UNAVAILABLE"),
+		("replayed", "REPLAYED_REQUEST"),
+		("timestamp-expired", "TIMESTAMP_EXPIRED"),
+	],
+)
+def test_any_unclear_claim_answer_fails_closed(reply, error_code):
+	sdk = _sdk()
+	DEVORA.reply = reply
+	try:
+		headers, _ = sign("GET", "/test")
+		result = sdk.verify_request("GET", "/test", "", b"", headers)
+		assert not result.valid and result.error_code == error_code
 	finally:
 		sdk.destroy()
 

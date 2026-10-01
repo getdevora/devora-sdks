@@ -45,23 +45,25 @@ test("semantic authorization accepts only a boolean true", async () => {
 	}
 })
 
-test("a replay store cannot authorize with a truthy nonboolean result", async () => {
-	globalThis.fetch = (async () =>
-		Response.json({
-			success: true,
-			data: {
-				version: 1,
-				safeReadEndpoints: [],
-				blockedEndpoints: [],
-				cachedUntil: Date.now() + 60_000,
-			},
-		})) as typeof fetch
-	for (const verdict of ["false", 1, {}, [], null, undefined]) {
-		const sdk = devoraSDK({ ...TEST_KEYS, replayStore: { consume: (async () => verdict) as any } })
+test("a Devora claim reply without an explicit claimed: true never authorizes", async () => {
+	for (const data of [{ claimed: "true" }, { claimed: 1 }, {}, null, [], { claimed: false }]) {
+		globalThis.fetch = (async (url: RequestInfo | URL) =>
+			String(url).endsWith("/api/sdk/request-claim")
+				? Response.json({ success: true, data })
+				: Response.json({
+						success: true,
+						data: {
+							version: 1,
+							safeReadEndpoints: [],
+							blockedEndpoints: [],
+							cachedUntil: Date.now() + 60_000,
+						},
+					})) as typeof fetch
+		const sdk = devoraSDK({ ...TEST_KEYS })
 		try {
 			const result = await sdk.verifyRequest(signedAdapterRequest({ method: "GET", path: "/test" }))
 			expect(result.valid).toBe(false)
-			expect(result.errorCode).toBe("REPLAY_STORE_UNAVAILABLE")
+			expect(result.errorCode).toBe("REQUEST_CLAIM_UNAVAILABLE")
 		} finally {
 			sdk.destroy()
 		}

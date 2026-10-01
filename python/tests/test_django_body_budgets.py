@@ -54,7 +54,7 @@ def test_django_browser_bridge_has_a_small_independent_body_budget():
 def test_django_bounded_reads_preserve_signed_json_requests(asynchronous):
 	from signing_support import API_KEY, ORG_ID, SECRET_KEY, sign
 
-	sdk = devora_sdk(API_KEY, SECRET_KEY, ORG_ID, environment="development", prefetch_scope_config=False)
+	sdk = devora_sdk(API_KEY, SECRET_KEY, ORG_ID, prefetch_scope_config=False)
 	try:
 		route = sdk.register("/echo", lambda request: {"received": request.body}, method="POST")
 		body = {"value": "é😀"}

@@ -109,6 +109,36 @@ def test_django_view_guard_preserves_url_captures(asynchronous):
 	assert seen == [(7, "paid")]
 
 
+def test_django_guard_answers_page_loads_with_html_and_api_calls_with_json():
+	def view(_request):
+		return HttpResponse("written")
+
+	guard = create_impersonation_guard(_SDK(), lambda _: _context("read"), enforce_liveness=False)
+	wrapped = guard(view)
+	form_post = RequestFactory().post(
+		"/customers/create", data={"name": "x"}, headers={"Accept": "text/html,application/xhtml+xml"}
+	)
+	page = wrapped(form_post)
+	assert page.status_code == 403
+	assert page["Content-Type"].startswith("text/html")
+	assert b"not allowed in this session" in page.content
+	assert page["Cache-Control"] == "private, no-store"
+	api_call = RequestFactory().post(
+		"/customers/create", data="{}", content_type="application/json", headers={"Accept": "application/json"}
+	)
+	assert wrapped(api_call)["Content-Type"] == "application/json"
+
+	rendered = []
+	custom = create_impersonation_guard(
+		_SDK(),
+		lambda _: _context("read"),
+		enforce_liveness=False,
+		render_blocked=lambda request, status, body: rendered.append((status, body["errorCode"])) or HttpResponse("mine", status=status),
+	)(view)
+	assert custom(form_post).content == b"mine"
+	assert rendered == [(403, "IMPERSONATION_SCOPE_VIOLATION")]
+
+
 # (name, scope, method, path, headers, reached)
 CASES = [
 	("allowlisted read-scope write", "read", "POST", "/api/search", {}, True),
@@ -399,7 +429,7 @@ def test_django_malformed_expiry_is_rejected_without_crashing(expires_at):
 @pytest.mark.parametrize("tolerance", [math.nan, math.inf, -math.inf, -1, 1.5, True, "300"])
 def test_invalid_timestamp_tolerances_are_rejected_everywhere(tolerance):
 	with pytest.raises(ValueError):
-		devora_sdk("pk_server_live_" + "A" * 32, "sk_server_live_" + "a" * 64, "org", environment="development", timestamp_tolerance=tolerance, prefetch_scope_config=False)
+		devora_sdk("pk_server_live_" + "A" * 32, "sk_server_live_" + "a" * 64, "org", timestamp_tolerance=tolerance, prefetch_scope_config=False)
 	with pytest.raises(ValueError):
 		ProcessRequestOptions(timestamp_tolerance=tolerance)
 	with pytest.raises(ValueError):
@@ -411,7 +441,7 @@ def test_invalid_timestamp_tolerances_are_rejected_everywhere(tolerance):
 def test_invalid_per_call_tolerances_fail_closed():
 	from signing_support import API_KEY, ORG_ID, SECRET_KEY, sign
 
-	sdk = devora_sdk(API_KEY, SECRET_KEY, ORG_ID, environment="development", prefetch_scope_config=False)
+	sdk = devora_sdk(API_KEY, SECRET_KEY, ORG_ID, prefetch_scope_config=False)
 	try:
 		headers, _ = sign("GET", "/x", sent_at=str(int(time.time()) - 3600))
 		for tolerance in (math.nan, math.inf, -1):

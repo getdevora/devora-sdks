@@ -16,6 +16,7 @@ export type {
 	DevoraResponse,
 	// User Search
 	DevoraUser,
+	DevoraUserAttributeValue,
 	UserSearchRequest,
 	UserSearchResponse,
 	// Impersonation
@@ -25,6 +26,7 @@ export type {
 	ImpersonationStartRequest,
 	ImpersonationStartResponse,
 	ImpersonationTerminateRequest,
+	SessionTerminationReason,
 	ImpersonationTerminateResponse,
 	// Frontend SDK
 	ImpersonationUserInfo,
@@ -73,6 +75,7 @@ export {
 	// URL & Storage
 	URL_PARAMS,
 	BROWSER_SESSION_BRIDGE,
+	REQUEST_CLAIM,
 	// Defaults
 	SDK_DEFAULTS,
 	// Metadata
@@ -136,8 +139,6 @@ export {
 	getSingleHeader,
 	parseSignatureHeaders,
 	hasIdentityContentEncoding,
-	replayNamespace,
-	replayExpiresAtMs,
 	parseVerifiedQuery,
 	parseVerifiedJsonBody,
 	routeRelativePath,

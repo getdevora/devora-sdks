@@ -34,13 +34,15 @@ from .models import (
 	DevoraImpersonationContext,
 	DevoraRequest,
 	DevoraResponse,
+	DevoraUser,
+	DevoraUserAttributeValue,
 	SDKRoute,
 	SDKStats,
+	UserSearchResponse,
 	ValidationResult,
 )
 from .policy import ScopeConfig, ScopeConfigFetcher
 from .sdk import DevoraBackendSDK, devora_sdk
-from .replay import InMemoryReplayStore, ReplayStore
 from .browser_session import resolve_browser_session
 from .constants import BROWSER_SESSION_BRIDGE_PATH
 
@@ -54,13 +56,14 @@ __all__ = [
 	"DevoraImpersonationContext",
 	"DevoraRequest",
 	"DevoraResponse",
+	"DevoraUser",
+	"DevoraUserAttributeValue",
 	"GuardDecision",
 	"ImpersonationContext",
-	"InMemoryReplayStore",
 	"ProcessRequestOptions",
-	"ReplayStore",
 	"SDKRoute",
 	"SDKStats",
+	"UserSearchResponse",
 	"ScopeConfig",
 	"ScopeEndpoint",
 	"ScopeConfigFetcher",

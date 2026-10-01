@@ -33,7 +33,6 @@ import { DEVORA_ENDPOINTS, SECURITY_HEADERS, SDK_DEFAULTS, SDK_VERSION } from "@
 
 // Use predefined endpoints for type safety
 console.log(DEVORA_ENDPOINTS.USER_SEARCH) // "/user/search"
-console.log(DEVORA_ENDPOINTS.USER_BY_ID) // "/user/:id"
 console.log(DEVORA_ENDPOINTS.IMPERSONATE) // "/impersonate/:id"
 console.log(DEVORA_ENDPOINTS.TERMINATE) // "/impersonate/:id/terminate"
 ```
@@ -103,12 +102,17 @@ import { DEVORA_ENDPOINTS } from "@devorash/core/constants"
 | -------------------- | -------------------------------------------- |
 | `DevoraRequest`      | Normalized request object passed to handlers |
 | `DevoraResponse`     | Standard response format                     |
-| `DevoraUser`         | User object for search results               |
+| `DevoraUser`         | Search result: `{ id, name?, email?, avatar?, attributes? }` |
+| `DevoraUserAttributeValue` | Attribute value: `string \| number \| boolean \| null` |
+| `UserSearchRequest`  | User search query: `{ term, limit? }`        |
+| `UserSearchResponse` | User search handler result: `{ users: DevoraUser[] }` |
 | `ImpersonationScope` | "read" or "write" scope                      |
 | `BackendSDKConfig`   | Backend SDK configuration                    |
 | `FrontendSDKConfig`  | Frontend SDK configuration                   |
 | `RouteDefinition`    | Route handler definition                     |
 | `LogEvent`           | Activity log event                           |
+| `ImpersonationTerminateRequest` | Terminate request body: `{ reason, terminatedBy? }` |
+| `SessionTerminationReason` | Why Devora ended a session (terminate `reason`) |
 
 ### Constants
 
@@ -119,6 +123,7 @@ import { DEVORA_ENDPOINTS } from "@devorash/core/constants"
 | `SDK_DEFAULTS`     | Default configuration values    |
 | `ERROR_CODES`      | SDK error codes                 |
 | `WRITE_METHODS`    | HTTP methods considered writes  |
+| `REQUEST_CLAIM`    | Devora request-claim endpoint and timeout |
 
 ### Security Functions
 

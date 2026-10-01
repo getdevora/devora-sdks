@@ -65,27 +65,39 @@ export interface DevoraResponse<T = unknown> {
 // User Search Types
 // ============================================================================
 
+/** An extra value shown in Devora's search results; `null` means "not set". */
+export type DevoraUserAttributeValue = string | number | boolean | null
+
 /**
- * User object returned from search
+ * A user returned from your USER_SEARCH handler. Devora shows it in the
+ * impersonation request dropdown using your dashboard template, and keeps what
+ * was shown as a verified snapshot on the request for approvers and audit.
  */
 export interface DevoraUser {
-	/** Unique user identifier (required) */
+	/** Unique user identifier (required, at most 256 characters) */
 	id: string
-	/** User's email address (recommended for display) */
-	email?: string
-	/** User's display name (recommended for display) */
+	/** Display name (at most 200 characters) */
 	name?: string
-	/** Optional avatar URL */
-	avatarUrl?: string
-	/** Optional additional metadata */
-	metadata?: Record<string, unknown>
+	/** Email address (at most 320 characters) */
+	email?: string
+	/** Avatar image: an https URL or a data:image URL */
+	avatar?: string
+	/**
+	 * Extra display fields such as company, role or plan. Keys: lowercase letters,
+	 * digits and underscores, starting with a letter (e.g. `last_login`). At most
+	 * 12; strings up to 120 characters. Never include secrets: keys that look like
+	 * passwords, tokens, keys or card data are dropped.
+	 */
+	attributes?: Record<string, DevoraUserAttributeValue>
 }
 
 /**
- * Request for user search endpoint
+ * Request for user search endpoint. `term` is what the agent typed; match it
+ * against name, email and the exact user ID. `limit` is 1-50 (default 10).
  */
 export interface UserSearchRequest {
 	term: string
+	limit?: string
 }
 
 /**
@@ -151,13 +163,34 @@ export interface ImpersonationStartResponse {
 }
 
 /**
- * Request body for session termination
+ * Why Devora ended a session, as sent to the customer's TERMINATE handler.
+ * `start_failed`: Devora sent the start request but the session never started
+ * (your handler may have issued a token). `not_started`: your handler issued a
+ * token but the impersonation link was never opened.
+ */
+export type SessionTerminationReason =
+	| "user_ended"
+	| "time_limit"
+	| "admin_terminated"
+	| "superseded"
+	| "request_revoked"
+	| "membership_revoked"
+	| "role_downgraded"
+	| "workos_session_revoked"
+	| "principal_erased"
+	| "organization_erased"
+	| "start_failed"
+	| "not_started"
+
+/**
+ * Request body for session termination. The session ID is the `:id` path
+ * parameter (`req.params.id`, also `req.sessionId`).
  */
 export interface ImpersonationTerminateRequest {
-	/** Session ID to terminate */
-	sessionId: string
-	/** Reason for termination */
-	reason: "manual" | "expired" | "terminated"
+	/** Why the session ended */
+	reason: SessionTerminationReason
+	/** Who ended it (their external user ID), when a person ended it */
+	terminatedBy?: string
 }
 
 /**
@@ -281,10 +314,8 @@ export interface PayloadError {
  * Error handler configuration
  */
 export interface ErrorHandlers {
-	tokenValidationFailed?: (error: Error) => void
 	scopeViolation?: (violation: ScopeViolation) => void
 	sessionExpired?: () => void
-	networkError?: (error: Error) => void
 	/** Called when the impersonation payload in the URL is invalid or expired */
 	payloadError?: (error: PayloadError) => void
 }

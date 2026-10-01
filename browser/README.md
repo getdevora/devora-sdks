@@ -158,6 +158,11 @@ Devora.onSessionEnd((reason) => {
 })
 ```
 
+`onSessionEnd` runs only in a tab that is open when the session ends. For cleanup that must
+always happen, such as revoking the credential your backend issued, use the backend SDK's
+terminate handler: Devora calls it server-side for every ended session. See
+[Session lifecycle & cleanup](https://docs.devora.sh/guide/session-lifecycle).
+
 ## Session restore
 
 A session starts in the tab that opened the Devora link. Your own login (cookie or token) is
@@ -244,8 +249,7 @@ await Devora.init({
 })
 ```
 
-`ErrorHandlers` also declares `tokenValidationFailed` and `networkError`; the SDK does not call
-them. `init()` itself rejects when `apiKey` or `apiUrl` is invalid.
+`init()` itself rejects when `apiKey` or `apiUrl` is invalid.
 
 ## Events
 

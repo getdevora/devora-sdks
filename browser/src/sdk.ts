@@ -20,7 +20,8 @@ import {
 	exchangePayload,
 	getExchangeCodeFromURL,
 	getExchangeVerifier,
-	hasExchangeParameterInURL,
+	hasUntakenExchangeInURL,
+	settleExchange,
 	resumeSession,
 	validateStoredSession,
 } from "./token-detector.js"
@@ -45,7 +46,7 @@ import type {
 	SessionRevocationState,
 } from "./types.js"
 
-/** Longest a voluntary end holds host logout for the final recording flush. */
+/** Longest a session end holds host logout for the final capture flush. */
 const FINAL_CAPTURE_LOGOUT_WAIT_MS = 1_000
 
 /**
@@ -122,6 +123,10 @@ export function createDevoraSDK(): DevoraFrontendSDK {
 		pendingExchange = null
 		if (exchangeExpiry) clearTimeout(exchangeExpiry)
 		exchangeExpiry = null
+	}
+	function expirePendingExchange(): void {
+		clearPendingExchange()
+		settleExchange()
 	}
 	let impersonateCallback: ((payload: ImpersonatePayload) => void | Promise<void>) | null = null
 	let sessionEndCallback: ((reason: string) => void | Promise<void>) | null = null
@@ -327,39 +332,54 @@ export function createDevoraSDK(): DevoraFrontendSDK {
 		// Get validation interval from config (default: 60 seconds)
 		const intervalMs = Math.min(Math.max(config?.validationIntervalMs ?? 60_000, 15_000), 300_000)
 
-		validationInterval = setInterval(async () => {
-			if (!sessionState.isActive || !config?.apiKey || !sessionState.sessionId) {
-				return
-			}
-
-			const generation = lifecycleGeneration
-			try {
-				const result = await validateStoredSession(
-					sessionState.sessionId,
-					config.apiKey,
-					devoraSessionToken ?? "",
-					apiUrl
-				)
-
-				if (generation !== lifecycleGeneration || !sessionState.isActive) return
-				if (result.outcome === "invalid") {
-					// Session was terminated externally (admin, expiry, etc.)
-					logger.log("Session terminated externally:", result.error)
-					await endSession(SDK_END_REASON.TERMINATED_EXTERNALLY)
-				} else if (result.outcome === "unknown") {
-					// Rate limited, erroring, or an unrecognized response — not proof
-					// the session ended. Leave the session running; the next interval
-					// (or a network error's own retry-on-next-tick) will try again.
-					logger.warn("Session validation inconclusive, will retry")
-				}
-			} catch (e) {
-				// Network error - don't terminate, just log
-				// User will be logged out on next successful validation or page refresh
-				logger.warn("Session validation failed (network):", e)
-			}
-		}, intervalMs)
-
+		validationInterval = setInterval(() => void checkSessionNow(), intervalMs)
 		logger.log("Periodic session validation started", { intervalMs })
+	}
+
+	/**
+	 * Ask Devora whether this session is still live and end it locally when not.
+	 * Runs on the validation interval, and at once when a heartbeat is refused,
+	 * so a tab ends (and sends its final capture inside Devora's late-data grace
+	 * window) soon after a session ends elsewhere.
+	 */
+	let sessionCheck: Promise<void> | null = null
+	function checkSessionNow(): Promise<void> {
+		sessionCheck ??= runSessionCheck().finally(() => {
+			sessionCheck = null
+		})
+		return sessionCheck
+	}
+
+	async function runSessionCheck(): Promise<void> {
+		if (!sessionState.isActive || !config?.apiKey || !sessionState.sessionId) {
+			return
+		}
+
+		const generation = lifecycleGeneration
+		try {
+			const result = await validateStoredSession(
+				sessionState.sessionId,
+				config.apiKey,
+				devoraSessionToken ?? "",
+				apiUrl
+			)
+
+			if (generation !== lifecycleGeneration || !sessionState.isActive) return
+			if (result.outcome === "invalid") {
+				// Session was terminated externally (admin, expiry, etc.)
+				logger.log("Session terminated externally:", result.error)
+				await endSession(SDK_END_REASON.TERMINATED_EXTERNALLY)
+			} else if (result.outcome === "unknown") {
+				// Rate limited, erroring, or an unrecognized response — not proof
+				// the session ended. Leave the session running; the next interval
+				// (or a network error's own retry-on-next-tick) will try again.
+				logger.warn("Session validation inconclusive, will retry")
+			}
+		} catch (e) {
+			// Network error - don't terminate, just log
+			// User will be logged out on next successful validation or page refresh
+			logger.warn("Session validation failed (network):", e)
+		}
 	}
 
 	/**
@@ -488,6 +508,15 @@ export function createDevoraSDK(): DevoraFrontendSDK {
 		})
 	}
 
+	/**
+	 * Devora stored this tab's upload after the session had ended elsewhere
+	 * (dashboard end, revoke, time limit). End locally now, so the final capture
+	 * still arrives inside Devora's late-data grace window.
+	 */
+	function endedElsewhere(): void {
+		if (sessionState.isActive) void endSession(SDK_END_REASON.TERMINATED_EXTERNALLY)
+	}
+
 	/** Local access closes before any telemetry, remote request or host callback is awaited. */
 	function endSession(reason: string): Promise<void> {
 		if (!sessionState.isActive) return endSessionTask ?? Promise.resolve()
@@ -505,8 +534,8 @@ export function createDevoraSDK(): DevoraFrontendSDK {
 		sessionState = { ...sessionState, isActive: false }
 		if (reason !== SDK_END_REASON.TERMINATED_EXTERNALLY) tabs.broadcast({ type: "ended", reason })
 		resetLocalSession()
-		// Read before stopCapture() retires the recorder.
-		const recording = sessionRecorder !== null
+		// Read before stopCapture() retires capture.
+		const capturing = sessionRecorder !== null || activityLogger !== null
 		const capture = stopCapture()
 		emit("impersonation_end", { reason, sessionId })
 		// Queue revocation before host callbacks can navigate away. Capture flushes
@@ -519,17 +548,13 @@ export function createDevoraSDK(): DevoraFrontendSDK {
 			reason !== SDK_END_REASON.TERMINATED_EXTERNALLY && cfg?.apiKey
 				? notifySessionEnd(origin, cfg.apiKey, token, sessionId, wireReason)
 				: Promise.resolve()
-		// A voluntary end's final recording chunk is admitted only while the session
-		// is live, and a host callback that navigates cancels an ordinary upload. So
-		// on a customer-initiated end, let host logout wait briefly for the final
-		// flush. Revocation above is already queued and never waits. Terminations,
-		// revocations and expiry log out immediately: their final chunk is refused.
-		const voluntary =
-			reason !== SDK_END_REASON.TERMINATED_EXTERNALLY && reason !== SDK_END_REASON.EXPIRED
-		const beforeLogout =
-			recording && voluntary
-				? withDeadline(() => capture, FINAL_CAPTURE_LOGOUT_WAIT_MS).catch(() => undefined)
-				: null
+		// Devora still stores capture that reaches it shortly after any end (its
+		// late-data grace window), but a host callback that navigates cancels an
+		// ordinary upload. So let host logout wait briefly for the final flush on
+		// every end. Revocation above is already queued and never waits.
+		const beforeLogout = capturing
+			? withDeadline(() => capture, FINAL_CAPTURE_LOGOUT_WAIT_MS).catch(() => undefined)
+			: null
 		// Start both host logout callbacks independently.
 		const callbacks = [callback, cfg?.onSessionEnd].filter(
 			(cb, index, all) => cb && all.indexOf(cb) === index
@@ -554,6 +579,8 @@ export function createDevoraSDK(): DevoraFrontendSDK {
 	 * Emit SDK event
 	 */
 	function emit(type: SDKEventType, data?: unknown): void {
+		// Every init path (session started, link refused, bridge restore) ends here.
+		if (type === "init") settleExchange()
 		const event: SDKEvent = { type, timestamp: Date.now(), data }
 		const listeners = eventListeners.get(type)
 		if (listeners) {
@@ -625,6 +652,7 @@ export function createDevoraSDK(): DevoraFrontendSDK {
 			captureErrors: capture?.consoleErrorCaptureEnabled === true,
 			captureCustomEvents: capture?.activityCustomEventsEnabled === true,
 			onIncomplete: (reason) => emit("error", { type: "activity_incomplete", reason }),
+			onSessionEnded: endedElsewhere,
 			debug: cfg.debug,
 		})
 		activityLogger.start()
@@ -648,6 +676,8 @@ export function createDevoraSDK(): DevoraFrontendSDK {
 			sessionId,
 			devoraSessionToken: sessionToken,
 			debug: cfg.debug,
+			// A refused heartbeat may mean the session ended elsewhere: check now.
+			onRejected: () => void checkSessionNow(),
 		})
 		presenceHeartbeat.start()
 	}
@@ -686,6 +716,7 @@ export function createDevoraSDK(): DevoraFrontendSDK {
 				// Non-fatal: the replay stays opaque but loses some fidelity.
 				emit("error", { type: "recording_privacy_degraded", reasons })
 			},
+			onSessionEnded: endedElsewhere,
 		})
 		sessionRecorder.start()
 	}
@@ -982,7 +1013,7 @@ export function createDevoraSDK(): DevoraFrontendSDK {
 			logger = createLogger("Devora SDK", sdkConfig.debug)
 
 			const autoDetect = sdkConfig.autoDetect !== false
-			const urlHasExchange = autoDetect && hasExchangeParameterInURL()
+			const urlHasExchange = autoDetect && hasUntakenExchangeInURL()
 			const code = urlHasExchange ? getExchangeCodeFromURL() : null
 			const verifier = urlHasExchange ? getExchangeVerifier() : null
 			if (urlHasExchange) cleanURL()
@@ -1004,7 +1035,7 @@ export function createDevoraSDK(): DevoraFrontendSDK {
 						apiUrl,
 						expiresAt: Date.now() + 30_000,
 					}
-					exchangeExpiry = setTimeout(clearPendingExchange, 30_000)
+					exchangeExpiry = setTimeout(expirePendingExchange, 30_000)
 				}
 			}
 			const handoff = pendingExchange
@@ -1240,6 +1271,10 @@ export function createDevoraSDK(): DevoraFrontendSDK {
 			sessionExpiredCallback = null
 			config = null
 			initialized = false
+			// A redemption this teardown interrupted will never emit "init": stop
+			// reporting it as in flight. An exchange still waiting to be taken stays
+			// in flight for the next init (React StrictMode remounts immediately).
+			if (!pendingExchange) settleExchange()
 			// An unconsumed exchange survives only its short, private handoff TTL.
 			// No shared state may be changed after awaiting retired capture.
 			await capture

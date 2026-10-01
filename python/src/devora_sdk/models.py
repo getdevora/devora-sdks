@@ -1,7 +1,30 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, MutableMapping, Optional
+from typing import Any, Callable, Mapping, MutableMapping, Optional, TypedDict, Union
+
+# An extra value shown in Devora's search results; None means "not set".
+DevoraUserAttributeValue = Optional[Union[str, int, float, bool]]
+
+
+class DevoraUser(TypedDict, total=False):
+	"""A user returned from your USER_SEARCH handler (``id`` is required).
+
+	``attributes`` holds extra display fields such as company, role or plan: keys
+	are lowercase letters, digits and underscores starting with a letter (e.g.
+	``last_login``); at most 12; strings up to 120 characters. Never include
+	secrets: keys that look like passwords, tokens, keys or card data are dropped.
+	"""
+
+	id: str
+	name: str
+	email: str
+	avatar: str
+	attributes: dict[str, DevoraUserAttributeValue]
+
+
+class UserSearchResponse(TypedDict):
+	users: list[DevoraUser]
 
 
 @dataclass(frozen=True)

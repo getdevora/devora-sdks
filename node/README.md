@@ -16,50 +16,34 @@ Requires Node.js 20 or later. Use it through a framework adapter:
 ## Installation
 
 ```bash
-npm install @devorash/node redis
+npm install @devorash/node
 # or
-bun add @devorash/node redis
+bun add @devorash/node
 ```
 
 ## Quick Start
 
 ```typescript
-import { createClient } from "redis"
-import { devoraSDK, DEVORA_ENDPOINTS } from "@devorash/node"
-
-// Replay protection shared by every instance of your backend (required in production).
-const redis = createClient({ url: process.env.REDIS_URL }).on("error", (err) => console.error("Redis error", err))
-let redisReady: Promise<unknown> | undefined // one connection, shared by concurrent first requests
+import { devoraSDK, DEVORA_ENDPOINTS, type ImpersonationTerminateRequest } from "@devorash/node"
 
 // Initialize SDK with your server key ID and secret key
 const sdk = devoraSDK({
 	apiKey: process.env.DEVORA_API_KEY!, // pk_server_live_...
 	secretKey: process.env.DEVORA_SECRET_KEY!, // sk_server_live_...
 	orgId: process.env.DEVORA_ORG_ID!,
-	debug: process.env.NODE_ENV === "development",
-	replayStore: {
-		async consume(namespace, requestId, expiresAt) {
-			await (redisReady ??= redis.connect().catch((err) => {
-				redisReady = undefined // retry on the next request
-				throw err
-			}))
-			const key = `devora:replay:${namespace}:${requestId}`
-			// Atomic insert-if-absent kept until expiresAt; an error makes the SDK fail closed (503).
-			const reply = await redis.sendCommand<string | null>(["SET", key, "1", "NX", "PXAT", String(expiresAt)])
-			return reply === "OK"
-		},
-	},
 })
 
-// User search endpoint
+// User search endpoint: match name, email and the exact user ID with a
+// parameterised query, and map each field explicitly.
 sdk.register(DEVORA_ENDPOINTS.USER_SEARCH, async (req) => {
-	const { term } = req.query
-	const users = await searchYourUsers(term)
+	const { term, limit } = req.query
+	const users = await searchYourUsers(String(term ?? ""), Number(limit ?? 10))
 	return {
 		users: users.map((u) => ({
 			id: u.id,
 			email: u.email,
 			name: u.name,
+			attributes: { company: u.company, role: u.role, plan: u.plan },
 		})),
 	}
 })
@@ -88,29 +72,60 @@ sdk.register(DEVORA_ENDPOINTS.IMPERSONATE, async (req) => {
 
 // Session termination endpoint
 sdk.register(DEVORA_ENDPOINTS.TERMINATE, async (req) => {
-	const { id } = req.params
-	const sessionId = req.sessionId ?? id
-
-	await invalidateUserSession(id, sessionId)
-
+	const sessionId = req.params.id
+	const { reason } = req.body as ImpersonationTerminateRequest
+	// YOU IMPLEMENT: mark this Devora session revoked so every credential issued for it
+	// is rejected, including one issued after this call. Must be idempotent: Devora
+	// retries with a new request id (up to 5 attempts over 6 hours).
+	await auth.revokeImpersonationSession({ sessionId, reason })
 	return { success: true }
 })
 
 export { sdk }
 ```
 
-The environment comes from the `environment` option, else `DEVORA_ENV`, else
-`NODE_ENV`. Anything other than `development` or `test` (including unset) is
-production, and production refuses to start without a `replayStore`; see
-[Security](#security).
+User search should match name, email and the exact user ID. `attributes` are optional display fields such as company, role or plan: up to 12 per user, lowercase keys like `last_login`, and string, number, boolean or `null` values. Devora drops invalid entries silently; see [Search results and templates](https://docs.devora.sh/guide/search-results) for the limits and how your team lays out results.
 
-**Local development only:** to run without Redis, omit `replayStore` and start
-the process with `DEVORA_ENV=development` (or pass `environment: "development"`).
-The SDK then keeps request ids in memory, which protects a single process only.
-Never use this in production.
+Each verified request is claimed once from Devora before your handler runs, so
+replay protection needs no storage on your side. Your backend must be able to
+make outbound HTTPS requests to the Devora API; see [Security](#security).
 
 Register every handler before creating an adapter: adapters read the route list
 once, when they are created.
+
+### Session termination
+
+Devora calls `DELETE /impersonate/:id/terminate` when a session ends. The
+session id is the `:id` path parameter (`req.params.id`, also `req.sessionId`)
+and the body is `{ reason, terminatedBy? }` (`ImpersonationTerminateRequest`).
+`terminatedBy` is the external user id of the person who ended the session and
+is absent for automatic ends. `reason` is a `SessionTerminationReason`:
+
+| `reason`                 | When                                                                                                                    |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `user_ended`             | Ended from the customer-app banner, or by the agent from the Devora dashboard                                           |
+| `time_limit`             | The approved time window was reached, or the session was idle too long                                                  |
+| `admin_terminated`       | An admin force-ended it (also when the impersonated user's data is erased)                                              |
+| `superseded`             | A newer session replaced it                                                                                             |
+| `request_revoked`        | The approval (access request) was revoked                                                                               |
+| `membership_revoked`     | The agent lost organization membership                                                                                  |
+| `role_downgraded`        | The agent's role no longer allows it                                                                                    |
+| `workos_session_revoked` | The agent's Devora sign-in was revoked                                                                                  |
+| `principal_erased`       | The agent's account was erased                                                                                          |
+| `organization_erased`    | The organization was erased                                                                                             |
+| `start_failed`           | Devora sent the start request, and your handler may have issued a token, but the session never started                  |
+| `not_started`            | Your handler issued a token but the impersonation link was never opened (sent a few minutes after the link expires)     |
+
+Devora retries a failed terminate call (up to 5 attempts over 6 hours, with
+backoff), each as a new signed request with a new request id, so the handler
+must be idempotent; any 2xx counts as delivered. A 4xx other than 408, 425 or 429 is
+not retried; when overloaded, answer 429 or 503 with `Retry-After`. Store the
+Devora `sessionId` with the credential you mint and revoke by session, not by
+token, so a credential minted by a slow start handler after the terminate is
+still rejected. The
+[impersonation guard](#createimpersonationguardoptions) also rejects credentials
+for sessions Devora no longer reports as active. See
+[Session lifecycle & cleanup](https://docs.devora.sh/guide/session-lifecycle).
 
 ## Framework Integration
 
@@ -170,10 +185,8 @@ const sdk = devoraSDK({
 	apiKey: "pk_server_live_xxx", // Your public server key ID
 	secretKey: "sk_server_live_xxx", // Your server secret key
 	orgId: "org_xxx", // Your organization ID
-	replayStore, // Required in production (see Security)
 
 	// Optional
-	environment: "production", // "development" | "test" | "production"; defaults from DEVORA_ENV, then NODE_ENV, else production
 	debug: false, // SDK debug logging (default: on when NODE_ENV=development)
 	timestampTolerance: 300, // Max clock drift in seconds, a non-negative integer (default: 300)
 	collectStats: false, // Per-endpoint counts in getStats() and counters in the /health response
@@ -213,58 +226,35 @@ status 200. Failures are `{ success: false, error, errorCode, timestamp }`:
 
 | Status | `errorCode`                                                                                          | Cause                                                                   |
 | ------ | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| 401    | `INVALID_SIGNATURE_HEADERS`, `UNSUPPORTED_SIGNATURE_VERSION`, `ORG_MISMATCH`, `TIMESTAMP_EXPIRED`, `INVALID_SIGNATURE`, `REPLAYED_REQUEST` | Unsigned, altered, stale or replayed request, or a different key or org |
+| 401    | `INVALID_SIGNATURE_HEADERS`, `UNSUPPORTED_SIGNATURE_VERSION`, `ORG_MISMATCH`, `TIMESTAMP_EXPIRED`, `INVALID_SIGNATURE` | Unsigned, altered or stale request, or a different key or org           |
+| 401    | `REPLAYED_REQUEST`                                                                                   | Devora already claimed this request id (the request was already processed) |
 | 401    | `INVALID_IMPERSONATION_CONTEXT`                                                                      | Incomplete or expired impersonation-start body                          |
 | 400    | `INVALID_REQUEST_TARGET`, `INVALID_BODY`                                                             | Malformed path or query; body that is not strict JSON                   |
 | 400    | `HANDLER_ERROR`                                                                                      | Your handler threw (its message is not sent)                            |
 | 413    | `BODY_TOO_LARGE`                                                                                     | Body larger than `maxBodySize`                                          |
 | 415    | `UNSUPPORTED_CONTENT_ENCODING`                                                                       | `Content-Encoding` other than `identity`                                |
-| 503    | `REPLAY_STORE_UNAVAILABLE`                                                                           | `replayStore.consume` threw or did not return a boolean                 |
+| 409    | `SESSION_NOT_STARTABLE`                                                                              | Start request for a session Devora is no longer starting                |
+| 503    | `REQUEST_CLAIM_UNAVAILABLE`                                                                          | Devora could not be reached to claim the request id, or gave no clear answer |
 
 ## Security
 
 Every request from Devora is signed with HMAC-SHA256 (request signing v3). The
 signature covers the exact path, query and body bytes, the request's direction,
 a timestamp and a single-use request id. The adapters verify it before any
-handler runs and reject unsigned, altered, stale or replayed requests. See
-[SIGNING.md](https://github.com/getdevora/devora-sdks/blob/main/SIGNING.md) for the protocol and the replay-store contract.
+handler runs and reject unsigned, altered or stale requests. See
+[SIGNING.md](https://github.com/getdevora/devora-sdks/blob/main/SIGNING.md) for the protocol.
 
-Production deployments need a shared, atomic `replayStore`: every instance
-must see every request id, and the insert must be atomic. The in-memory store
-is for `environment: "development"` or `"test"` only; any other environment
-refuses to start without a `replayStore`.
+After a request verifies, the SDK claims its request id from Devora with one
+signed call (`POST /api/sdk/request-claim`, 3-second timeout). The first claim
+wins; a repeat gets `REPLAYED_REQUEST`, and the handler runs only after a
+successful claim. Only requests whose signature verified are ever claimed, so
+unauthenticated traffic cannot use up request ids. If Devora cannot be reached
+the SDK fails closed with `REQUEST_CLAIM_UNAVAILABLE` (503).
 
-```typescript
-import { createClient } from "redis"
-import { devoraSDK, type ReplayStore } from "@devorash/node"
-
-const redis = createClient({ url: process.env.REDIS_URL }).on("error", (err) => console.error("Redis error", err))
-let redisReady: Promise<unknown> | undefined // one connection, shared by concurrent first requests
-
-const replayStore: ReplayStore = {
-	async consume(namespace, requestId, expiresAt) {
-		await (redisReady ??= redis.connect().catch((err) => {
-			redisReady = undefined // retry on the next request
-			throw err
-		}))
-		const key = `devora:replay:${namespace}:${requestId}`
-		// Atomic insert-if-absent kept until expiresAt; an error makes the SDK fail closed (503).
-		const reply = await redis.sendCommand<string | null>(["SET", key, "1", "NX", "PXAT", String(expiresAt)])
-		return reply === "OK"
-	},
-}
-
-const sdk = devoraSDK({
-	apiKey: process.env.DEVORA_API_KEY!,
-	secretKey: process.env.DEVORA_SECRET_KEY!,
-	orgId: process.env.DEVORA_ORG_ID!,
-	replayStore,
-})
-```
-
-Do not run the store with an eviction policy that can drop keys before they
-expire (`maxmemory-policy` must not evict these keys). A unique-key database
-insert with an expiry column works too.
+You provide no storage for this, but your backend must be able to make outbound
+HTTPS requests to the Devora API (it already does so for the endpoint policy and
+session liveness). Devora's **Test connection** check is claimed too, so it also
+proves that outbound connectivity.
 
 ## Types
 

@@ -5,7 +5,6 @@ import {
 	createImpersonationGuard,
 	createScopeConfigFetcher,
 	validateImpersonationContext,
-	resolveEnvironment,
 	resolveBrowserSession,
 	BROWSER_SESSION_BRIDGE,
 	devoraSDK,
@@ -39,6 +38,7 @@ import {
 	signTestRequest,
 	signedAdapterRequest as signAdapterRequest,
 } from "./support/signing"
+import { fakeDevora } from "./support/devora-claims"
 
 const { apiKey, secretKey, orgId } = TEST_KEYS
 const clientApiKey = "pk_client_live_abc123456789012345678"
@@ -76,7 +76,7 @@ function scopeConfigResponse(blockedEndpoints: Array<{ method: string; pattern: 
 
 beforeEach(() => {
 	originalFetch = globalThis.fetch
-	globalThis.fetch = async () => scopeConfigResponse()
+	globalThis.fetch = fakeDevora(async () => scopeConfigResponse()).fetch
 })
 
 afterEach(() => {
@@ -1216,7 +1216,6 @@ test("real HTTP policy revalidation accepts 304 on the deployed Bun runtime", as
 	const sdk = devoraSDK({
 		...TEST_KEYS,
 		apiUrl: `http://127.0.0.1:${server.port}`,
-		environment: "test",
 	})
 	try {
 		await sdk.ready
@@ -1312,28 +1311,20 @@ test("a 404 from session-status is a definitive not-live verdict", async () => {
 	expect(body?.errorCode).toBe("IMPERSONATION_SESSION_ENDED")
 })
 
-test("production requires a replayStore; development may omit it", () => {
-	expect(resolveEnvironment("production")).toBe("production")
-	expect(resolveEnvironment("development")).toBe("development")
-	expect(() => devoraSDK({ apiKey, secretKey, orgId, environment: "production" })).toThrow(
-		/replayStore is required in production/
-	)
-	expect(() => devoraSDK({ apiKey, secretKey, orgId, environment: "development" })).not.toThrow()
-	let consumed = 0
+test("the SDK needs no replay storage and ignores retired replay options", async () => {
+	// Every environment behaves the same: Devora records claimed request ids.
 	const sdk = devoraSDK({
 		apiKey,
 		secretKey,
 		orgId,
-		environment: "production",
-		replayStore: {
-			async consume() {
-				consumed++
-				return true
-			},
-		},
+		...({ environment: "production", replayStore: { consume: () => true } } as object),
 	})
-	expect(sdk).toBeDefined()
-	expect(consumed).toBe(0)
+	sdk.register(DEVORA_ENDPOINTS.USER_SEARCH, () => ({ users: [] }))
+	await sdk.ready
+	const request = signAdapterRequest({ method: "GET", path: "/user/search", query: "term=a" })
+	expect((await processRequest(sdk, sdk.getRoutes(), request)).success).toBe(true)
+	expect((await processRequest(sdk, sdk.getRoutes(), request)).errorCode).toBe("REPLAYED_REQUEST")
+	sdk.destroy()
 })
 
 test("Next.js guard forwards isImpersonationAllowed", async () => {

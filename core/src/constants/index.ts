@@ -25,14 +25,6 @@ export const DEVORA_ENDPOINTS = {
 	USER_SEARCH: "/user/search",
 
 	/**
-	 * Get user by ID endpoint - retrieves a specific user's details
-	 * @method GET
-	 * @path /user/:id
-	 * @params id - User ID to look up
-	 */
-	USER_BY_ID: "/user/:id",
-
-	/**
 	 * Impersonation start endpoint - generates auth token for session
 	 * @method POST
 	 * @path /impersonate/:id
@@ -76,7 +68,6 @@ export type DevoraEndpointPath = (typeof DEVORA_ENDPOINTS)[keyof typeof DEVORA_E
  */
 export const ENDPOINT_METHODS: Record<DevoraEndpointPath, "GET" | "POST" | "DELETE"> = {
 	[DEVORA_ENDPOINTS.USER_SEARCH]: "GET",
-	[DEVORA_ENDPOINTS.USER_BY_ID]: "GET",
 	[DEVORA_ENDPOINTS.IMPERSONATE]: "POST",
 	[DEVORA_ENDPOINTS.TERMINATE]: "DELETE",
 	[DEVORA_ENDPOINTS.TEST]: "GET",
@@ -151,6 +142,18 @@ export const BROWSER_SESSION_BRIDGE = {
 	TAB_REF_PATTERN: /^[A-Za-z0-9_-]{4,96}$/,
 } as const
 
+/**
+ * Single use of signed Devora → customer requests. After verifying a request's
+ * signature the backend SDK claims its request id from Devora, which records it;
+ * the handler runs only for the first claim. Customers need no storage of their own.
+ */
+export const REQUEST_CLAIM = {
+	/** Devora endpoint the backend SDK calls with a signed server request. */
+	ENDPOINT: "/api/sdk/request-claim",
+	/** Total deadline for a claim, leaving room for the handler within Devora's own deadline. */
+	TIMEOUT_MS: 3_000,
+} as const
+
 export const URL_PARAMS = {
 	/** One-time code exchanged for the encrypted impersonation payload */
 	EXCHANGE_CODE: "devora_exchange",
@@ -208,7 +211,7 @@ export const SDK_PACKAGES = {
 /**
  * Current SDK version (synced across all packages)
  */
-export const SDK_VERSION = "0.1.1"
+export const SDK_VERSION = "0.1.2"
 
 // ============================================================================
 // Error Codes

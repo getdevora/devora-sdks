@@ -84,10 +84,10 @@ async def async_process_request(
 	import asyncio
 
 	loop = asyncio.get_running_loop()
-	# _prepare_request verifies the HMAC signature and consumes the replay
-	# nonce; in production the replay store is disk- or network-backed, so
-	# this can block. Run it off the event loop rather than stalling every
-	# other request this async server is handling. Using the stdlib executor
+	# _prepare_request verifies the HMAC signature and claims the request id
+	# from Devora over the network, so this can block. Run it off the event
+	# loop rather than stalling every other request this async server is
+	# handling. Using the stdlib executor
 	# (rather than anyio/Starlette's threadpool) keeps this module usable from
 	# any asyncio-based framework, not just FastAPI.
 	prepared = await loop.run_in_executor(None, _prepare_request, sdk, routes, request, options)

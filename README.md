@@ -65,27 +65,29 @@ npm install @devorash/node @devorash/express
 ```
 
 ```typescript
-import { devoraSDK, DEVORA_ENDPOINTS } from "@devorash/node"
+import { devoraSDK, DEVORA_ENDPOINTS, type ImpersonationTerminateRequest } from "@devorash/node"
 import { expressAdapter } from "@devorash/express"
 
 const sdk = devoraSDK({
 	apiKey: process.env.DEVORA_API_KEY!, // pk_server_live_…
 	secretKey: process.env.DEVORA_SECRET_KEY!, // sk_server_live_…
 	orgId: process.env.DEVORA_ORG_ID!,
-	// Required in production: an atomic insert-if-absent shared by every
-	// instance (see SIGNING.md, "Replay store").
-	replayStore,
 })
 
 await sdk.ready
 
 sdk.register(DEVORA_ENDPOINTS.USER_SEARCH, async (req) => {
-	const { term } = req.query
-	return { users: await searchUsers(term) }
-})
-
-sdk.register(DEVORA_ENDPOINTS.USER_BY_ID, async (req) => {
-	return { user: await findUser(req.params.id) }
+	const { term, limit } = req.query
+	// Match name, email and the exact user ID with a parameterised query.
+	const users = await searchUsers(String(term ?? ""), Number(limit ?? 10))
+	return {
+		users: users.map((u) => ({
+			id: u.id,
+			name: u.name,
+			email: u.email,
+			attributes: { company: u.company, role: u.role, plan: u.plan },
+		})),
+	}
 })
 
 sdk.register(DEVORA_ENDPOINTS.IMPERSONATE, async (req) => {
@@ -97,14 +99,23 @@ sdk.register(DEVORA_ENDPOINTS.IMPERSONATE, async (req) => {
 })
 
 sdk.register(DEVORA_ENDPOINTS.TERMINATE, async (req) => {
-	const sessionId = req.sessionId ?? req.params.id
-	await invalidateSession(sessionId)
+	const sessionId = req.params.id
+	const { reason } = req.body as ImpersonationTerminateRequest
+	// Revoke every credential issued for this Devora session, including one issued
+	// after this call. Must be idempotent: Devora retries (up to 5 attempts over 6 hours).
+	await auth.revokeImpersonationSession({ sessionId, reason })
 	return { success: true }
 })
 
 // Mount before any application-wide body parser.
 app.use("/devora", expressAdapter(sdk))
 ```
+
+User search should match name, email and the exact user ID. `attributes` are optional display fields such as company, role or plan: up to 12 per user, lowercase keys like `last_login`, and string, number, boolean or `null` values. Devora drops invalid entries silently; see [Search results and templates](https://docs.devora.sh/guide/search-results) for the limits and how your team lays out results.
+
+Each verified request is claimed once from Devora before your handler runs, so
+you need no storage for replay protection, but your backend must be able to make
+outbound HTTPS requests to the Devora API.
 
 ### Frontend SDK (React example)
 
