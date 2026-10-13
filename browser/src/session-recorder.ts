@@ -80,6 +80,19 @@ const TAB_ID_KEY = "__devora_recording_tab_id_v1"
 // so we don't mint a new id on every getOrCreateTabId() call within the same page.
 let tabIdRuntimeFallback: string | null = null
 const PAUSE_DEBOUNCE_MS = 1000 // Ignore pauses shorter than 1s
+// Recording time counts only while someone is using the tab: a visible, focused tab with
+// no input for this long pauses (it resumes on the next input). The page is still captured
+// while paused; paused time is not metered.
+const IDLE_PAUSE_MS = 2 * 60_000
+const IDLE_CHECK_MS = 15_000
+const INPUT_EVENTS = [
+	"pointerdown",
+	"pointermove",
+	"keydown",
+	"wheel",
+	"touchstart",
+	"scroll",
+] as const
 const INITIAL_FLUSH_DELAY_MS = 2000 // Delay before first flush (ensures meaningful initial data)
 
 // Adaptive chunking: flush before a chunk's *uncompressed* JSON grows large.
@@ -88,6 +101,13 @@ const DEFAULT_MAX_CHUNK_BYTES = 600_000
 
 // fetch() keepalive requests are capped at ~64 KB total body in major browsers.
 const MAX_KEEPALIVE_BODY_BYTES = 60_000
+
+// Upload once the unsent tail reaches this, without waiting for the timer. On
+// tab close the tail (or the upload carrying it) is re-sent with keepalive,
+// which takes at most MAX_SYNC_RECORDING_BYTES (24 KB); staying below it keeps
+// the last seconds before a close deliverable. Quiet pages still wait for the
+// timer, and busy pages upload in proportion to their data, not their events.
+const UNLOAD_SAFE_TAIL_BYTES = 16_000
 
 // Fail-closed safety valve. If uploads keep failing, we keep the contiguous,
 // already-buffered prefix and stop buffering *new* events rather than dropping
@@ -122,7 +142,7 @@ export interface SessionRecorderConfig {
 	sessionId: string
 	/** Devora control-plane bearer token for this exact session. */
 	devoraSessionToken: string
-	/** Batch size before auto-flush (default: 50 events) */
+	/** Buffered events before an early flush (default: 2000; the size cap and timer usually flush first) */
 	batchSize?: number
 	/** Max uncompressed bytes buffered before auto-flush (default: 800000) */
 	maxChunkBytes?: number
@@ -163,13 +183,13 @@ export interface SessionRecorderConfig {
 	 * capture still arrives inside that window.
 	 */
 	onSessionEnded?: () => void
-	/** Pause callback (when recording pauses due to visibility/focus) */
-	onPause?: (reason: "tab_hidden" | "browser_unfocused") => void
+	/** Pause callback (when recording pauses: hidden tab, unfocused window, or no input) */
+	onPause?: (reason: "tab_hidden" | "browser_unfocused" | "user_idle") => void
 	/** Resume callback (when recording resumes) */
 	onResume?: (pauseDurationMs: number) => void
 }
 
-type PauseReason = "tab_hidden" | "browser_unfocused"
+type PauseReason = "tab_hidden" | "browser_unfocused" | "user_idle"
 
 /**
  * The server refused the upload for a reason a retry cannot fix: the tab's
@@ -547,6 +567,9 @@ export class SessionRecorder {
 	private isPaused = false
 	private pausedAt: number | null = null
 	private pauseReason: PauseReason | null = null
+	private lastInputAt = Date.now()
+	private idleTimer: ReturnType<typeof setInterval> | null = null
+	private boundHandleInput: () => void
 
 	// Event listeners (for cleanup)
 	private boundHandleVisibilityChange: () => void
@@ -568,7 +591,10 @@ export class SessionRecorder {
 
 	constructor(config: SessionRecorderConfig) {
 		this.config = {
-			batchSize: 50,
+			// Uploads are paced by flushInterval and the byte cap. A small event
+			// count turned rrweb's steady mousemove/mutation stream into an upload
+			// every few seconds, each costing a full server round trip.
+			batchSize: 2000,
 			maxChunkBytes: DEFAULT_MAX_CHUNK_BYTES,
 			flushInterval: 10000, // 10 seconds
 			...config,
@@ -585,6 +611,7 @@ export class SessionRecorder {
 		// Bind event handlers
 		this.boundHandleVisibilityChange = this.handleVisibilityChange.bind(this)
 		this.boundHandleBlur = this.handleBlur.bind(this)
+		this.boundHandleInput = this.handleInput.bind(this)
 		this.boundHandleFocus = this.handleFocus.bind(this)
 		this.boundHandlePageHide = this.handlePageHide.bind(this)
 		this.boundHandlePopState = this.handlePopState.bind(this)
@@ -732,18 +759,7 @@ export class SessionRecorder {
 						return
 					}
 
-					// Auto-flush on event count OR accumulated byte budget, whichever
-					// comes first, so a single large mutation can't create an oversized chunk.
-					if (
-						this.events.length >= this.config.batchSize ||
-						this.pendingBytes >= this.config.maxChunkBytes
-					) {
-						this.logger.log("Flush threshold reached, triggering flush...", {
-							eventCount: this.events.length,
-							pendingBytes: this.pendingBytes,
-						})
-						void this.flush()
-					}
+					this.flushIfTailTooLarge()
 				},
 
 				// Privacy: resolved masking rules (defaults to the "full" preset —
@@ -953,6 +969,10 @@ export class SessionRecorder {
 			window.addEventListener("focus", this.boundHandleFocus)
 			window.addEventListener("pagehide", this.boundHandlePageHide)
 			window.addEventListener("popstate", this.boundHandlePopState)
+			for (const type of INPUT_EVENTS)
+				window.addEventListener(type, this.boundHandleInput, { capture: true, passive: true })
+			this.lastInputAt = Date.now()
+			this.idleTimer = setInterval(() => this.checkIdle(), IDLE_CHECK_MS)
 		}
 	}
 
@@ -965,7 +985,25 @@ export class SessionRecorder {
 			window.removeEventListener("focus", this.boundHandleFocus)
 			window.removeEventListener("pagehide", this.boundHandlePageHide)
 			window.removeEventListener("popstate", this.boundHandlePopState)
+			for (const type of INPUT_EVENTS)
+				window.removeEventListener(type, this.boundHandleInput, { capture: true })
 		}
+		if (this.idleTimer) {
+			clearInterval(this.idleTimer)
+			this.idleTimer = null
+		}
+	}
+
+	private handleInput(): void {
+		this.lastInputAt = Date.now()
+		if (this.isPaused && this.pauseReason === "user_idle") this.onResume()
+	}
+
+	/** A visible, focused tab with no input for IDLE_PAUSE_MS stops counting recording time. */
+	private checkIdle(): void {
+		if (this.isPaused || typeof document === "undefined") return
+		if (document.visibilityState !== "visible" || !document.hasFocus()) return
+		if (Date.now() - this.lastInputAt >= IDLE_PAUSE_MS) this.onPause("user_idle")
 	}
 
 	private handleVisibilityChange(): void {
@@ -975,6 +1013,7 @@ export class SessionRecorder {
 			// Re-persist tab id when the tab becomes visible again (covers storage
 			// write failures on an earlier page load in this browsing context).
 			persistTabId(this.tabId)
+			this.lastInputAt = Date.now()
 			this.onResume()
 		}
 	}
@@ -991,6 +1030,7 @@ export class SessionRecorder {
 
 	private handleFocus(): void {
 		if (document.hasFocus()) {
+			this.lastInputAt = Date.now()
 			this.onResume()
 		}
 	}
@@ -1596,6 +1636,28 @@ export class SessionRecorder {
 		this.reportCaptureIncomplete(reasonCode)
 	}
 
+	/** True while the unsent tail is too large to wait for the next timer flush. */
+	private tailTooLarge(): boolean {
+		return (
+			this.events.length >= this.config.batchSize ||
+			this.pendingBytes >= Math.min(this.config.maxChunkBytes, UNLOAD_SAFE_TAIL_BYTES)
+		)
+	}
+
+	/**
+	 * Upload early when the tail reaches the event count or byte budget, so a
+	 * single large mutation can't create an oversized chunk and a tab close can
+	 * still re-send the tail with keepalive.
+	 */
+	private flushIfTailTooLarge(): void {
+		if (!this.tailTooLarge()) return
+		this.logger.log("Flush threshold reached, triggering flush...", {
+			eventCount: this.events.length,
+			pendingBytes: this.pendingBytes,
+		})
+		void this.flush()
+	}
+
 	private async performFlush(isFinal: boolean): Promise<void> {
 		if (this.uploadDenied) return
 		this.logger.log("flush() called", {
@@ -1638,7 +1700,11 @@ export class SessionRecorder {
 			}
 
 			if (chunk.isFinal) break
-			if (!isFinal && this.events.length === 0) break
+			// Between timer flushes, keep draining only while the unsent tail is
+			// too large to re-send safely on tab close. Smaller tails wait for the
+			// next interval: re-uploading every event at once made any live page
+			// (a ticking countdown, mousemove) upload about once per round trip.
+			if (!isFinal && (this.events.length === 0 || !this.tailTooLarge())) break
 		}
 	}
 

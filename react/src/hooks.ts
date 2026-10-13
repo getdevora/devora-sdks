@@ -38,6 +38,8 @@ export function useDevoraImpersonation() {
 		impersonator: context.session?.impersonator ?? null,
 		/** Remaining time in milliseconds (from smart timer) */
 		remainingMs,
+		/** Spread on a custom countdown so session recordings skip it (`data-devora-sdk-ui`). */
+		countdownProps: { "data-devora-sdk-ui": "" } as const,
 		/** End the current session */
 		endSession: context.endSession,
 	}

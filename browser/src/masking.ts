@@ -25,6 +25,7 @@
 
 import {
 	DEVORA_PRIVACY_MARKERS,
+	DEVORA_SDK_UI_ATTR,
 	type DevoraCaptureSnapshot,
 	type DevoraMaskingProfile,
 } from "@devorash/core"
@@ -55,6 +56,9 @@ export interface SerializationSanitizer {
 const HARDEN_MASK_SELECTORS = [`.${M.MASK_CLASS}`, `[${M.MASK_ATTR}]`]
 /** Developer markers that always block, in every profile. */
 const HARDEN_BLOCK_SELECTORS = [`.${M.BLOCK_CLASS}`, `[${M.BLOCK_ATTR}]`]
+
+/** Devora's own UI (banner countdown): always blocked, even in settings-only capture. */
+const SDK_UI_SELECTORS = [`[${DEVORA_SDK_UI_ATTR}]`]
 
 /** Media elements blocked by `recordingBlockMedia`. */
 const MEDIA_SELECTORS = ["img", "svg", "video", "audio", "object", "picture", "embed"]
@@ -229,7 +233,8 @@ export function resolveMasking(capture: DevoraCaptureSnapshot | undefined): Reso
 
 	const hardenMask = capture?.settingsOnly === true ? [] : HARDEN_MASK_SELECTORS
 	const hardenBlock = capture?.settingsOnly === true ? [] : HARDEN_BLOCK_SELECTORS
-	const textBlockSelector = joinSelectors([...hardenBlock, ...block.valid]) || undefined
+	const textBlockSelector =
+		joinSelectors([...SDK_UI_SELECTORS, ...hardenBlock, ...block.valid]) || undefined
 	return {
 		profile,
 		settingsOnly: capture?.settingsOnly === true,
@@ -237,8 +242,12 @@ export function resolveMasking(capture: DevoraCaptureSnapshot | undefined): Reso
 		maskSelector: joinSelectors([...hardenMask, ...mask.valid]),
 		unmaskSelector: joinSelectors([...regions, ...unmask.valid]),
 		blockSelector:
-			joinSelectors([...hardenBlock, ...block.valid, ...(blockAllMedia ? MEDIA_SELECTORS : [])]) ||
-			undefined,
+			joinSelectors([
+				...SDK_UI_SELECTORS,
+				...hardenBlock,
+				...block.valid,
+				...(blockAllMedia ? MEDIA_SELECTORS : []),
+			]) || undefined,
 		textBlockSelector,
 		blockAllMedia,
 		dropped: [...mask.dropped, ...block.dropped, ...unmask.dropped],

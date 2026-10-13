@@ -130,6 +130,53 @@ test("retries reuse exactly the same compressed bytes and chunk index", async ()
 	expect(recorder.failedChunk).toBeNull()
 })
 
+test("events that arrive during an upload wait for the next interval flush", async () => {
+	// A live page (ticking countdown, mousemove) adds events during every upload.
+	// Re-uploading them at once turned each tab into about one upload per round trip.
+	const uploads: any[] = []
+	let recorder: any
+	let ticking = true
+	globalThis.fetch = (async (url, init) => {
+		if (String(url).endsWith("/chunk")) {
+			uploads.push(JSON.parse(String(init?.body)))
+			if (ticking) recorder.enqueueRecordingEvent(event(100 + uploads.length, "tick"))
+		}
+		return Response.json({ success: true })
+	}) as typeof fetch
+	recorder = new SessionRecorder(config)
+	recorder.enqueueRecordingEvent(event(0, "tick"))
+	await recorder.flush()
+	expect(uploads).toHaveLength(1)
+	expect(recorder.events).toHaveLength(1)
+	await recorder.flush()
+	expect(uploads).toHaveLength(2)
+	expect(uploads[1].chunkIndex).toBe(uploads[0].chunkIndex + 1)
+	// A final flush still drains everything.
+	ticking = false
+	await recorder.flush(true)
+	expect(recorder.events).toHaveLength(0)
+})
+
+test("an unsent tail too large for an unload keepalive uploads without waiting for the timer", async () => {
+	// On tab close the tail is re-sent with keepalive (24 KB at most). Pacing must
+	// not let more than that build up between timer flushes.
+	const uploads: any[] = []
+	globalThis.fetch = (async (url, init) => {
+		if (String(url).endsWith("/chunk")) uploads.push(JSON.parse(String(init?.body)))
+		return Response.json({ success: true })
+	}) as typeof fetch
+	const recorder = new SessionRecorder(config) as any
+	recorder.firstSnapshotFlushed = true
+	let i = 0
+	while (recorder.pendingBytes < 16_000) {
+		recorder.enqueueRecordingEvent(event(i++, "x".repeat(2000)))
+		recorder.flushIfTailTooLarge()
+	}
+	await recorder.activeFlush
+	expect(uploads.length).toBeGreaterThanOrEqual(1)
+	expect(recorder.pendingBytes).toBeLessThan(16_000)
+})
+
 test("recording encoding works without a native compressor", async () => {
 	Object.defineProperty(globalThis, "CompressionStream", {
 		configurable: true,
@@ -212,4 +259,43 @@ test("a retired recorder queues a bounded final tail while an earlier POST remai
 	release()
 	await ending
 	expect(ended).toBe(true)
+})
+
+test("a visible, focused tab with no input stops counting time and resumes on input", () => {
+	const documentDescriptor = Object.getOwnPropertyDescriptor(globalThis, "document")
+	const state = { visibilityState: "visible", focused: true }
+	Object.defineProperty(globalThis, "document", {
+		configurable: true,
+		value: {
+			get visibilityState() {
+				return state.visibilityState
+			},
+			hasFocus: () => state.focused,
+		},
+	})
+	try {
+		const reasons: string[] = []
+		const recorder = new SessionRecorder({ ...config, onPause: (r) => reasons.push(r) }) as any
+		recorder.lastInputAt = Date.now() - 60_000
+		recorder.checkIdle()
+		expect(recorder.isPaused).toBe(false)
+		recorder.lastInputAt = Date.now() - 2 * 60_000
+		recorder.checkIdle()
+		expect(recorder.isPaused).toBe(true)
+		expect(reasons).toEqual(["user_idle"])
+		recorder.handleInput()
+		expect(recorder.isPaused).toBe(false)
+		// A hidden or unfocused tab is paused by those handlers, not the idle check.
+		state.focused = false
+		recorder.lastInputAt = 0
+		recorder.checkIdle()
+		expect(recorder.isPaused).toBe(false)
+		// Input does not resume a tab paused for being hidden.
+		recorder.onPause("tab_hidden")
+		recorder.handleInput()
+		expect(recorder.isPaused).toBe(true)
+	} finally {
+		if (documentDescriptor) Object.defineProperty(globalThis, "document", documentDescriptor)
+		else Reflect.deleteProperty(globalThis, "document")
+	}
 })

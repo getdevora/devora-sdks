@@ -58,6 +58,7 @@
 			{targetUser}
 			{impersonator}
 			{remainingMs}
+			countdownProps={{ "data-devora-sdk-ui": "" }}
 			endSession={endDevoraSession}
 		/>
 	{:else if isMinimized}
@@ -68,7 +69,8 @@
 			style="position:fixed;top:10px;right:10px;z-index:9999;display:flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;background-color:{BRAND_BLUE};color:#ffffff;font-family:system-ui,sans-serif;font-size:12px;font-weight:600;border:none;cursor:pointer;"
 		>
 			<span aria-hidden="true" style="width:6px;height:6px;border-radius:50%;background:#fff;"></span>
-			{formatCountdownClock(remainingMs)}
+			<!-- data-devora-sdk-ui: the recorder blocks this clock, so it never keeps an idle tab uploading. -->
+			<span data-devora-sdk-ui="">{formatCountdownClock(remainingMs)}</span>
 		</button>
 	{:else}
 		<div
@@ -83,7 +85,7 @@
 					<span style="margin-left:10px;opacity:0.85;font-weight:400;">
 						{scopeLabel}
 						{#if remainingMs !== null && remainingMs > 0}
-							&nbsp;· {formatCountdownClock(remainingMs)} left
+							<span data-devora-sdk-ui="">&nbsp;· {formatCountdownClock(remainingMs)} left</span>
 						{/if}
 					</span>
 				{/if}

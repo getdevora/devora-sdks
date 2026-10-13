@@ -1,6 +1,6 @@
 {
 	"name": "@devorash/browser",
-	"version": "0.1.2",
+	"version": "0.1.3",
 	"description": "Devora Frontend JavaScript SDK for secure impersonation",
 	"keywords": [
 		"browser",
@@ -51,10 +51,10 @@
 	},
 	"dependencies": {
 		"@devorash/core": "workspace:*",
-		"@rrweb/rrweb-plugin-console-record": "2.0.1",
+		"@rrweb/rrweb-plugin-console-record": "2.1.7",
 		"css-tree": "3.2.1",
 		"fflate": "^0.8.3",
-		"rrweb": "2.0.1"
+		"rrweb": "2.1.7"
 	},
 	"devDependencies": {
 		"@types/css-tree": "3.2.0",

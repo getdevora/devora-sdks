@@ -392,6 +392,14 @@ export const DEVORA_PRIVACY_MARKERS = {
 } as const
 
 /**
+ * Marks Devora's own SDK UI, such as the banner countdown. The recorder always
+ * blocks it, in every profile: it is never customer content, and a clock that
+ * changes every second would otherwise keep an idle tab uploading. Custom
+ * banners that render `remainingMs` can put it on their countdown too.
+ */
+export const DEVORA_SDK_UI_ATTR = "data-devora-sdk-ui"
+
+/**
  * Scope violation event
  */
 export interface ScopeViolation {

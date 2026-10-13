@@ -55,7 +55,7 @@ class SessionLivenessChecker:
 	returns None) or "deny" (fail closed, returns False).
 	"""
 
-	def __init__(self, sdk: Any, cache_ttl_ms: int = 5_000, on_unavailable: str = "deny") -> None:
+	def __init__(self, sdk: Any, cache_ttl_ms: int = 15_000, on_unavailable: str = "deny") -> None:
 		if on_unavailable not in ("allow", "deny"):
 			raise ValueError("Invalid liveness unavailable policy")
 		if not isinstance(cache_ttl_ms, (int, float)) or not math.isfinite(cache_ttl_ms) or cache_ttl_ms < 0:

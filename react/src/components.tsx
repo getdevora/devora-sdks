@@ -33,6 +33,8 @@ export interface ImpersonationBannerProps {
 		targetUser: { id: string; email?: string; name?: string } | null
 		impersonator: { id: string; email?: string; name?: string } | null
 		remainingMs: number | null
+		/** Spread on a custom countdown so session recordings skip it (`data-devora-sdk-ui`). */
+		countdownProps: { "data-devora-sdk-ui": "" }
 		endSession: () => Promise<void>
 	}) => ReactNode
 }
@@ -155,6 +157,7 @@ export function ImpersonationBanner({
 					targetUser,
 					impersonator,
 					remainingMs,
+					countdownProps: { "data-devora-sdk-ui": "" },
 					endSession,
 				})}
 			</>
@@ -180,7 +183,8 @@ export function ImpersonationBanner({
 					aria-hidden
 					style={{ width: 6, height: 6, borderRadius: "50%", background: "#fff" }}
 				/>
-				{formatCountdownClock(remainingMs)}
+				{/* data-devora-sdk-ui: the recorder blocks this clock, so it never keeps an idle tab uploading. */}
+				<span data-devora-sdk-ui="">{formatCountdownClock(remainingMs)}</span>
 			</button>
 		)
 	}
@@ -205,9 +209,9 @@ export function ImpersonationBanner({
 				{scope !== null && (
 					<span style={{ marginLeft: 10, opacity: 0.85, fontWeight: 400 }}>
 						{scopeLabel}
-						{remainingMs !== null &&
-							remainingMs > 0 &&
-							` · ${formatCountdownClock(remainingMs)} left`}
+						{remainingMs !== null && remainingMs > 0 && (
+							<span data-devora-sdk-ui="">{` · ${formatCountdownClock(remainingMs)} left`}</span>
+						)}
 					</span>
 				)}
 			</span>

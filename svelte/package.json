@@ -1,6 +1,6 @@
 {
 	"name": "@devorash/svelte",
-	"version": "0.1.2",
+	"version": "0.1.3",
 	"description": "Devora Svelte SDK - stores for impersonation",
 	"keywords": [
 		"devora",
@@ -70,7 +70,7 @@
 		"@devorash/core": "workspace:*"
 	},
 	"devDependencies": {
-		"svelte": "^5.56.4",
+		"svelte": "^5.57.2",
 		"typescript": "^6.0.3"
 	},
 	"peerDependencies": {

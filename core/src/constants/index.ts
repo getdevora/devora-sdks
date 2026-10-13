@@ -211,7 +211,7 @@ export const SDK_PACKAGES = {
 /**
  * Current SDK version (synced across all packages)
  */
-export const SDK_VERSION = "0.1.2"
+export const SDK_VERSION = "0.1.3"
 
 // ============================================================================
 // Error Codes

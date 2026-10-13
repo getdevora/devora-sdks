@@ -149,7 +149,7 @@ credential minted by a slow start handler after the terminate is still rejected.
 
 The guard's session-liveness checker caches at most 1,024 results and permits at
 most 64 distinct concurrent lookups per checker. Requests for the same session
-share a lookup. Live/ended results use the configured TTL (five seconds by
+share a lookup. Live/ended results use the configured TTL (15 seconds by
 default); unavailable results use at most one second. Cache hits never extend a
 verdict's lifetime. Capacity exhaustion follows the configured unavailable
 policy, which denies access by default.
