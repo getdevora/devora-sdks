@@ -22,6 +22,8 @@ export interface ImpersonationBannerProps {
 		targetUser: { id: string; email?: string; name?: string } | null
 		impersonator: { id: string; email?: string; name?: string } | null
 		remainingMs: Accessor<number | null>
+		/** Spread on a custom countdown so session recordings skip it (`data-devora-sdk-ui`). */
+		countdownProps: { "data-devora-sdk-ui": "" }
 		endSession: () => Promise<void>
 	}) => JSX.Element
 }
@@ -165,6 +167,7 @@ export function ImpersonationBanner(props: ImpersonationBannerProps): JSX.Elemen
 					targetUser: impersonation.targetUser(),
 					impersonator: impersonation.impersonator(),
 					remainingMs: impersonation.remainingMs,
+					countdownProps: { "data-devora-sdk-ui": "" },
 					endSession: impersonation.endSession,
 				})}
 			>
@@ -181,7 +184,8 @@ export function ImpersonationBanner(props: ImpersonationBannerProps): JSX.Elemen
 								aria-hidden="true"
 								style={{ width: "6px", height: "6px", "border-radius": "50%", background: "#fff" }}
 							/>
-							{formatCountdownClock(impersonation.remainingMs())}
+							{/* data-devora-sdk-ui: the recorder blocks this clock, so it never keeps an idle tab uploading. */}
+							<span data-devora-sdk-ui="">{formatCountdownClock(impersonation.remainingMs())}</span>
 						</button>
 					}
 				>
@@ -203,7 +207,9 @@ export function ImpersonationBanner(props: ImpersonationBannerProps): JSX.Elemen
 							<Show when={impersonation.scope() !== null}>
 								<span style={{ "margin-left": "10px", opacity: "0.85", "font-weight": "400" }}>
 									{scopeLabel()}
-									{remainingLabel()}
+									<Show when={remainingLabel()}>
+										<span data-devora-sdk-ui="">{remainingLabel()}</span>
+									</Show>
 								</span>
 							</Show>
 						</span>

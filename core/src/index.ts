@@ -56,7 +56,7 @@ export type {
 	BrowserResumeCode,
 } from "./types/index.js"
 
-export { DEVORA_PRIVACY_MARKERS } from "./types/index.js"
+export { DEVORA_PRIVACY_MARKERS, DEVORA_SDK_UI_ATTR } from "./types/index.js"
 
 // ============================================================================
 // Constants

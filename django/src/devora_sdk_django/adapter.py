@@ -55,7 +55,7 @@ class DjangoImpersonationGuardOptions:
 	blocked_response: Mapping[str, Any] = field(default_factory=dict)
 	show_warnings: bool = False
 	enforce_liveness: bool = True
-	liveness_cache_ttl_ms: int = 5_000
+	liveness_cache_ttl_ms: int = 15_000
 	on_liveness_unavailable: str = "deny"
 	is_impersonation_allowed: Optional[Callable[[Any, ImpersonationContext], bool]] = None
 	bridge_path: Optional[str] = None
@@ -263,7 +263,7 @@ def create_impersonation_guard(
 	blocked_response: Optional[Mapping[str, Any]] = None,
 	show_warnings: bool = False,
 	enforce_liveness: bool = True,
-	liveness_cache_ttl_ms: int = 5_000,
+	liveness_cache_ttl_ms: int = 15_000,
 	on_liveness_unavailable: str = "deny",
 	is_impersonation_allowed: Optional[Callable[[Any, ImpersonationContext], bool]] = None,
 	bridge_path: Optional[str] = None,

@@ -31,10 +31,11 @@ def test_fresh_cache_has_a_hard_lru_bound_without_extending_verdict_ttl():
 			checker.check(str(i))
 		assert len(checker._cache) == 1024
 		assert sdk.calls == 5000
-		clock.return_value = 104.9
+		# Default TTL is 15 seconds.
+		clock.return_value = 114.9
 		assert checker.check("4999") == (True, False)
 		assert sdk.calls == 5000
-		clock.return_value = 105
+		clock.return_value = 115
 		assert checker.check("4999") == (True, False)
 		assert sdk.calls == 5001  # Access did not extend the original TTL.
 

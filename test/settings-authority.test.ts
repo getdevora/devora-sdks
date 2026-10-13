@@ -207,7 +207,8 @@ test("new sessions ignore page markers unless the administrator selects them", (
 	const rules = resolveMasking(snapshot)
 	const privacy = buildRrwebPrivacyOptions(rules)
 	expect(privacy.maskTextFn("VISIBLE", element)).toBe("VISIBLE")
-	expect(rules.blockSelector).toBeUndefined()
+	// Only Devora's own UI (the banner countdown) is blocked; page markers are not.
+	expect(rules.blockSelector).toBe("[data-devora-sdk-ui]")
 	expect(privacy.ignoreClass).toBe("")
 	expect(privacy.ignoreSelector).toBe(":not(*)")
 	expect((privacy.maskTextClass as RegExp).test("devora-mask")).toBe(false)

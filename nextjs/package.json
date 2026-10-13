@@ -1,6 +1,6 @@
 {
 	"name": "@devorash/nextjs",
-	"version": "0.1.2",
+	"version": "0.1.3",
 	"description": "Devora Next.js adapter — App Router route handlers, scope guard, and client provider",
 	"keywords": [
 		"app-router",
@@ -57,9 +57,9 @@
 		"@devorash/react": "workspace:*"
 	},
 	"devDependencies": {
-		"@types/node": "^26.0.1",
-		"@types/react": "^19.2.17",
-		"react": "^19.2.7",
+		"@types/node": "^26.6.5",
+		"@types/react": "^19.3.0",
+		"react": "^19.3.0",
 		"typescript": "^6.0.3"
 	},
 	"peerDependencies": {

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.3
+
+Patch release for all fourteen packages. It is compatible with 0.1.2: no option, export or wire format is removed or renamed.
+
+- Browser SDK: recording time now counts only while someone is using the tab. A hidden tab or an unfocused window (for example the other side of a split screen) already paused; now a visible, focused tab with no pointer, keyboard, scroll or touch input for 2 minutes also pauses (reason `user_idle`) and resumes on the next input. The page is still captured while paused; only active recording hours are affected. `onPause` can now receive `"user_idle"`.
+- Browser SDK: recording uploads are paced by the flush interval and chunk size instead of following every new event, so an idle tab no longer uploads every second. The impersonation banner's countdown is marked `data-devora-sdk-ui` and always excluded from recordings.
+- Custom banners (React render prop and hook, Vue and Svelte slots, Solid render prop) receive `countdownProps` (`{ "data-devora-sdk-ui": "" }`) to spread on their own countdown, so recordings skip it like the built-in banner.
+- Browser SDK: the recorder uses rrweb 2.1.7 (from 2.0.1): faster mutation recording on busy pages and a fix for style text built piece by piece (styled-components). The recording format and masking behaviour are unchanged.
+- Backend guards (Node and Python): a session liveness result is cached for 15 seconds by default (was 5 seconds), cutting liveness lookups threefold. `livenessCacheTtlMs` / `liveness_cache_ttl_ms` still override it. Devora's terminate call remains the primary revocation path; the cache only bounds how long a revoked session can be missed if that call fails.
+
 ## 0.1.2
 
 Breaking release for all fourteen packages. 0.1.0 and 0.1.1 are deprecated; use 0.1.2 or later.

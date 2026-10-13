@@ -346,7 +346,7 @@ export function createImpersonationGuard<TRequest extends MiddlewareRequest = Mi
 		blockedResponse = {},
 		showWarnings = process.env.NODE_ENV !== "production",
 		enforceLiveness = true,
-		livenessCacheTtlMs = 5_000,
+		livenessCacheTtlMs = 15_000,
 		onLivenessUnavailable = "deny",
 		isImpersonationAllowed,
 		bridgePath,

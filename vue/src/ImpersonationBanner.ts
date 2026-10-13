@@ -11,6 +11,8 @@ export interface ImpersonationBannerSlotProps {
 	targetUser: { id: string; email?: string; name?: string } | null
 	impersonator: { id: string; email?: string; name?: string } | null
 	remainingMs: number | null
+	/** Spread on a custom countdown so session recordings skip it (`data-devora-sdk-ui`). */
+	countdownProps: { "data-devora-sdk-ui": "" }
 	endSession: () => Promise<void>
 }
 
@@ -130,6 +132,7 @@ export const ImpersonationBanner = defineComponent({
 				targetUser: impersonation.targetUser.value,
 				impersonator: impersonation.impersonator.value,
 				remainingMs: impersonation.remainingMs.value,
+				countdownProps: { "data-devora-sdk-ui": "" },
 				endSession: impersonation.endSession,
 			}
 
@@ -157,7 +160,8 @@ export const ImpersonationBanner = defineComponent({
 							"aria-hidden": "true",
 							style: { width: "6px", height: "6px", borderRadius: "50%", background: "#fff" },
 						}),
-						formatCountdownClock(slotProps.remainingMs),
+						// data-devora-sdk-ui: the recorder blocks this clock, so it never keeps an idle tab uploading.
+						h("span", { "data-devora-sdk-ui": "" }, formatCountdownClock(slotProps.remainingMs)),
 					]
 				)
 			}
@@ -194,7 +198,11 @@ export const ImpersonationBanner = defineComponent({
 								? h("span", { style: { marginLeft: "10px", opacity: "0.85", fontWeight: "400" } }, [
 										scopeLabel,
 										remainingMs !== null && remainingMs > 0
-											? ` · ${formatCountdownClock(remainingMs)} left`
+											? h(
+													"span",
+													{ "data-devora-sdk-ui": "" },
+													` · ${formatCountdownClock(remainingMs)} left`
+												)
 											: null,
 									])
 								: null,
